@@ -29,6 +29,10 @@
   .banner.show{display:block}
   .banner b{color:#fff}
   .banner code{background:#00000055;padding:1px 6px;border-radius:4px;font-size:12px}
+  .banner table.diag{border-collapse:collapse;margin:8px 0;font-size:12px;min-width:340px}
+  .banner table.diag td{border:1px solid #f8514955;padding:4px 10px}
+  .banner table.diag td.ok{color:#7ee787}
+  .banner table.diag td.bad{color:#ff9d94}
   .hero{background:linear-gradient(135deg,#13261b,#161b22 60%);border:1px solid #2ea04355;border-radius:14px;padding:20px;margin-bottom:18px;display:none}
   .hero.show{display:block}
   .hero .kicker{color:var(--green);font-size:12px;font-weight:800;letter-spacing:.12em;text-transform:uppercase}
@@ -68,7 +72,7 @@
 <body>
 <div class="wrap">
   <h1>Deriv Best-Market Analyzer <span class="dot">●</span></h1>
-  <div class="sub">Ranks every Volatility index for your streak-scaling bot — trend persistence, candle strength, directional efficiency, tick-stream momentum and volatility, plus a live “is the bot’s scanner green?” badge that mirrors your bot’s exact entry checks.</div>
+  <div class="sub">Ranks every Volatility index for your streak-scaling bots — trend persistence, candle strength, directional efficiency, tick-stream momentum and volatility — plus live badges that mirror both bots' exact entry checks: the Rise/Fall trend scanner (4/4) and the Even/Odd parity gate (anchor + 6/10).</div>
 
   <div class="bar">
     <button id="btnScan">Scan markets</button>
@@ -99,13 +103,14 @@
       <li><b>Directional efficiency (20%)</b> — net travel ÷ path travelled over the last 30 candles. High = price actually goes somewhere.</li>
       <li><b>Tick-stream momentum (15%)</b> — how consistently the 10-tick momentum direction has held over the last 100 ticks — your bot’s check #4, measured over time.</li>
       <li><b>Volatility (20%)</b> — average 1-min range as % of price. 5-tick contracts need movement; rank-based so slow indices never score 0 by units.</li>
-      <li>Scores are weighted <em>percentile ranks</em> within this scan (0–100). The green badge mirrors your bot’s 4 scanner checks exactly (side = last closed candle; live candle agrees; tick beyond that close; body ≥ 0.3×range; 10-tick stream).</li>
+      <li>Scores are weighted <em>percentile ranks</em> within this scan (0–100). The <b>RF</b> badge mirrors your Rise/Fall bot’s 4 scanner checks exactly (side = last closed candle; live candle agrees; tick beyond that close; body ≥ 0.3×range; 10-tick stream). The <b>EO</b> badge mirrors the Even/Odd bot’s parity gate: last digit’s parity = parity 10 ticks back (anchor) <b>and</b> ≥ 6 of the last 10 digits agreeing — READY when both pass.</li>
     </ul>
   </details>
 
   <footer>
-    <b>How to use:</b> double-click this file (or drag it into Chrome) — it must run in your browser, because Deriv’s data API is reachable from your network but not from a sandboxed preview iframe.<br>
-    If your browser blocks the connection, serve the folder instead: <code>python -m http.server 8000</code> → open <code>http://localhost:8000/Best_Market_Analyzer.html</code>.<br>
+    <b>How to use:</b> open this page and press <b>Scan markets</b> — it runs entirely in your browser against Deriv’s public WebSocket API.<br>
+    If the scan fails, the red panel shows a per-endpoint connection test (WebSocket vs plain HTTPS) and what to try next — usually an ad-block/VPN extension or a network-level block.<br>
+    Offline/local option: download <code>Best_Market_Analyzer.html</code> from the repo, then <code>python -m http.server 8000</code> → open <code>http://localhost:8000/Best_Market_Analyzer.html</code>.<br>
     Data: Deriv public WebSocket API (<code>app_id 1089</code>, no login). Rankings describe <i>recent</i> market structure — they do not predict the future. Always test on demo first. Not financial advice.
   </footer>
 </div>
@@ -123,6 +128,9 @@ const CONFIG = {
   strengthRatio: 0.3,       // bot's body/range threshold
   streamWindow: 10,         // bot's 10-tick window
   streamSamples: 90,
+  parityWindow: 10,         // even/odd bot: agreement over last 10 ticks
+  parityAnchor: 11,         // newest digit vs digit 10 ticks back (FROM_END 11)
+  parityMinAgree: 6,        // bot's >= 6 of 10 threshold
   weights: { trend: 0.25, strong: 0.20, eff: 0.20, tickmom: 0.15, range: 0.20 },
   maxSymbols: 24,
   chunkSize: 6,
@@ -216,6 +224,38 @@ function botReadyState(fullCandles, prices, nowSec, isLive){
   return { side, passed: checks.filter(Boolean).length, checks, note: "" };
 }
 
+/* mirror of the Even/Odd bot's parity-streak gate (before_purchase block):
+   anchor = parity(latest digit) == parity(digit 10 ticks back) AND
+   >= 6 of the last 10 digits share the latest tick's parity.
+   Prices may be strings (Deriv sends display-precision strings — keep them
+   so trailing zeros like "6012.30" give digit 0, exactly like the bot's
+   pip-formatted getLastDigitList). */
+function lastDigitOf(p){
+  const s = String(p);
+  if (!s.length) return NaN;
+  const c = s.charCodeAt(s.length - 1);
+  return (c >= 48 && c <= 57) ? (c - 48) : NaN;
+}
+function parityState(prices){
+  const out = { side: null, anchorOK: false, agree: 0, ready: false, note: "" };
+  if (!prices || prices.length < CONFIG.parityAnchor){ out.note = "need 11+ ticks"; return out; }
+  const d1 = lastDigitOf(prices[prices.length - 1]);
+  if (isNaN(d1)){ out.note = "no digit"; return out; }
+  const p1 = (d1 % 2 === 0);
+  const dA = lastDigitOf(prices[prices.length - CONFIG.parityAnchor]);
+  if (isNaN(dA)){ out.note = "no digit"; return out; }
+  out.side = p1 ? "Even" : "Odd";
+  out.anchorOK = ((dA % 2 === 0) === p1);
+  let agree = 0;
+  for (let i = 0; i < CONFIG.parityWindow; i++){
+    const d = lastDigitOf(prices[prices.length - 1 - i]);
+    if (!isNaN(d) && ((d % 2 === 0) === p1)) agree++;
+  }
+  out.agree = agree;
+  out.ready = out.anchorOK && agree >= CONFIG.parityMinAgree;
+  return out;
+}
+
 function percentileRanks(values){
   const n = values.length;
   if (n <= 1) return values.map(() => 100);
@@ -247,7 +287,7 @@ function rankRows(rows){
   return rows.slice().sort((a, b) => b.score - a.score);
 }
 
-function analyzeSymbol(info, candles, prices, nowSec){
+function analyzeSymbol(info, candles, prices, nowSec, rawPrices){
   const last = candles[candles.length - 1];
   const isLive = !!last && (nowSec - last.epoch) < CONFIG.granularity;
   const closedAll = isLive ? candles.slice(0, -1) : candles.slice();
@@ -255,17 +295,18 @@ function analyzeSymbol(info, candles, prices, nowSec){
   const px = prices.map(Number);
   const metrics = computeMetrics(closed, px);
   const ready = botReadyState(candles, px, nowSec, isLive);
+  const parity = parityState(rawPrices && rawPrices.length ? rawPrices : prices);
   return {
     symbol: info.symbol,
     displayName: info.displayName || info.symbol,
-    metrics, ready, isLive,
+    metrics, ready, parity, isLive,
     closedCount: closed.length
   };
 }
 
 /* export for unit tests (browser ignores this) */
 if (typeof module !== "undefined" && module.exports){
-  module.exports = { CONFIG, computeMetrics, botReadyState, percentileRanks, rankRows, analyzeSymbol, sign };
+  module.exports = { CONFIG, computeMetrics, botReadyState, parityState, lastDigitOf, percentileRanks, rankRows, analyzeSymbol, sign };
 }
 </script>
 
@@ -276,7 +317,7 @@ if (typeof module !== "undefined" && module.exports){
   const state = {
     ws: null, endpointIdx: 0, scanning: false, cancelled: false,
     reqId: 1, pending: new Map(), rows: [], skipped: [], lastUpdated: null,
-    autoTimer: null, pingTimer: null, scanToken: 0
+    autoTimer: null, pingTimer: null, scanToken: 0, connectLog: []
   };
 
   function setStatus(txt, isErr){
@@ -295,30 +336,35 @@ if (typeof module !== "undefined" && module.exports){
     return new Promise((resolve, reject) => {
       const urls = CONFIG_ENDPOINTS();
       let i = state.endpointIdx % urls.length;
+      state.connectLog = [];
       const attempt = (idx) => {
         if (state.cancelled) return reject(new Error("cancelled"));
         const url = urls[idx];
-        setStatus("Connecting to Deriv… (" + new URL(url).host + ")");
+        const host = new URL(url).host;
+        const t0 = Date.now();
+        setStatus("Connecting to Deriv… (" + host + ")");
         let settled = false;
         const ws = new WebSocket(url);
-        const fail = (msg) => {
+        const fail = (kind, msg) => {
           if (settled) return;
           settled = true;
           try { ws.close(); } catch(e){}
+          state.connectLog.push({ host, kind, ms: Date.now() - t0 });
           if (idx + 1 < urls.length) attempt(idx + 1);
           else reject(new Error(msg));
         };
-        const timer = setTimeout(() => fail("connection timeout to " + url), 10000);
+        const timer = setTimeout(() => fail("timeout", "connection timeout to " + url), 10000);
         ws.onopen = () => {
           if (settled) return;
           settled = true; clearTimeout(timer);
+          state.connectLog.push({ host, kind: "ok", ms: Date.now() - t0 });
           state.ws = ws; state.endpointIdx = idx;
           clearInterval(state.pingTimer);
           state.pingTimer = setInterval(() => { try { ws.send(JSON.stringify({ping:1})); } catch(e){} }, 25000);
           resolve(ws);
         };
-        ws.onerror = () => fail("could not open " + url);
-        ws.onclose = () => fail("closed " + url);
+        ws.onerror = () => fail("refused/failed", "could not open " + url);
+        ws.onclose = () => fail("closed", "closed " + url);
         ws.onmessage = (ev) => {
           let msg; try { msg = JSON.parse(ev.data); } catch(e){ return; }
           if (msg.msg_type === "ping" || msg.msg_type === "candles" || msg.msg_type === "history" ||
@@ -381,9 +427,65 @@ if (typeof module !== "undefined" && module.exports){
       epoch: Number(c.epoch), open: Number(c.open), high: Number(c.high),
       low: Number(c.low), close: Number(c.close)
     })).filter(c => isFinite(c.epoch) && isFinite(c.close));
-    const prices = ((tRes.history || {}).prices || []).map(Number).filter(isFinite);
+    const rawPrices = ((tRes.history || {}).prices || []).map(String);
+    const prices = rawPrices.map(Number).filter(isFinite);
     if (candles.length < 5 || prices.length < 20) throw new Error("insufficient data");
-    return { candles, prices };
+    return { candles, prices, rawPrices };
+  }
+
+  async function diagnose(){
+    const results = [];
+    for (const url of CONFIG_ENDPOINTS()){
+      if (state.cancelled) break;
+      const host = new URL(url).host;
+      const t0 = Date.now();
+      const kind = await new Promise(res => {
+        let settled = false, ws;
+        try { ws = new WebSocket(url); } catch(e){ return res("bad URL"); }
+        const done = k => { if (settled) return; settled = true; try { ws.close(); } catch(e){} res(k); };
+        setTimeout(() => done("timeout"), 7000);
+        ws.onopen = () => done("OPEN");
+        ws.onerror = () => done("blocked");
+        ws.onclose = () => done("closed");
+      });
+      results.push({ host, kind, ms: Date.now() - t0 });
+    }
+    let https = "untested";
+    try {
+      await fetch("https://ws.derivws.com/websockets/v3?app_id=1089", { mode: "no-cors", cache: "no-store" });
+      https = "reachable";
+    } catch(e){ https = "blocked"; }
+    return { results, https };
+  }
+
+  function failureBanner(errMsg, diag){
+    const wssOk = diag && diag.results.some(r => r.kind === "OPEN");
+    const httpsOk = diag && diag.https === "reachable";
+    let html = "<b>Could not open a WebSocket to Deriv's API from this page.</b><br>";
+    if (diag && diag.results.length){
+      html += "<table class='diag'><tr><td>WebSocket endpoint</td><td>result</td><td>took</td></tr>";
+      for (const r of diag.results){
+        html += "<tr><td><code>" + r.host + "</code></td><td class='" +
+          (r.kind === "OPEN" ? "ok'>OPEN" : "bad'>" + r.kind) +
+          "</td><td>" + r.ms + " ms</td></tr>";
+      }
+      html += "<tr><td><code>https:// reachability</code></td><td class='" +
+        (httpsOk ? "ok'>reachable" : "bad'>" + (diag.https || "?")) + "</td><td>—</td></tr>";
+      html += "</table>";
+      if (wssOk){
+        html += "A fresh connection just opened — press <b>Scan markets</b> again.<br>";
+      } else if (httpsOk){
+        html += "Your network reaches Deriv over <b>HTTPS</b> but blocks the <b>WebSocket</b> — usually a VPN, proxy, firewall or a browser extension (ad-block / privacy).<br>" +
+          "• Try <b>Incognito</b> (or disable ad-block/VPN extensions), then reload this page.<br>" +
+          "• Try a different network (e.g. your phone's hotspot).<br>" +
+          "• Check <code>status.deriv.com</code> for outages.<br>";
+      } else {
+        html += "This network cannot reach Deriv's API hosts at all — switch networks (phone hotspot) or turn off VPN/proxy, then reload.<br>";
+      }
+    }
+    html += "• If you downloaded this file, you can also serve it locally: <code>python -m http.server 8000</code> → <code>http://localhost:8000/Best_Market_Analyzer.html</code><br>" +
+      "<i>Detail:</i> " + String(errMsg || "");
+    return html;
   }
 
   async function runScan(){
@@ -408,10 +510,10 @@ if (typeof module !== "undefined" && module.exports){
         setStatus("Scanning markets " + Math.min(i + chunk.length, total) + "/" + total + "…");
         const results = await Promise.all(chunk.map(async s => {
           try {
-            const { candles, prices } = await fetchSymbol(s.symbol);
+            const { candles, prices, rawPrices } = await fetchSymbol(s.symbol);
             return { ok: true, row: window.CORE.analyzeSymbol(
               { symbol: s.symbol, displayName: s.display_name || s.symbol },
-              candles, prices, Math.floor(Date.now() / 1000)) };
+              candles, prices, Math.floor(Date.now() / 1000), rawPrices) };
           } catch (e) {
             return { ok: false, symbol: s.symbol, name: s.display_name || s.symbol, err: e.message };
           }
@@ -438,13 +540,13 @@ if (typeof module !== "undefined" && module.exports){
       }
     } catch (e) {
       if (!state.cancelled){
-        setStatus("Scan failed: " + e.message, true);
-        showBanner(
-          "<b>Could not reach Deriv's API from this page.</b><br>" +
-          "• Make sure you opened this file in your normal browser (Chrome/Edge) with internet access — the in-app preview iframe has no network.<br>" +
-          "• If your network blocks the WebSocket, serve the folder: <code>python -m http.server 8000</code> then open <code>http://localhost:8000/Best_Market_Analyzer.html</code>.<br>" +
-          "• Open your Deriv chart in another tab to confirm the market data loads there.<br>" +
-          "<i>Detail:</i> " + String(e.message || e));
+        setStatus("Scan failed: " + e.message + " — diagnosing connections…", true);
+        let diag = null;
+        try { diag = await diagnose(); } catch(err){}
+        if (!state.cancelled){
+          setStatus("Scan failed: " + e.message, true);
+          showBanner(failureBanner(e.message, diag));
+        }
       }
     } finally {
       state.scanning = false;
@@ -463,6 +565,16 @@ if (typeof module !== "undefined" && module.exports){
     return '<span class="chip ' + cls + '">' + label + "</span>" + you;
   }
 
+  /* mirror of the Even/Odd bot's parity gate */
+  function parityBadge(p, symbol){
+    if (!p || !p.side) return '<span class="chip no">EO waiting</span>';
+    const cls = p.ready ? "ready" : "part";
+    const label = p.ready
+      ? ("EO " + p.side.toUpperCase() + " · READY " + p.agree + "/10")
+      : ("EO " + p.side.toUpperCase() + " · " + p.agree + "/10" + (p.anchorOK ? "" : " · anchor ✗"));
+    return '<span class="chip ' + cls + '">' + label + "</span>";
+  }
+
   function render(){
     const rows = state.rows;
     const area = $("tableArea");
@@ -475,7 +587,8 @@ if (typeof module !== "undefined" && module.exports){
     $("hero").classList.add("show");
     $("heroName").textContent = best.displayName;
     $("heroSym").textContent = best.symbol +
-      (best.ready && best.ready.side ? "  ·  scanner: " + best.ready.passed + "/4 for " + best.ready.side : "  ·  scanner: waiting");
+      (best.ready && best.ready.side ? "  ·  scanner: " + best.ready.passed + "/4 for " + best.ready.side : "  ·  scanner: waiting") +
+      (best.parity && best.parity.side ? "  ·  parity: " + best.parity.side + (best.parity.ready ? " READY " + best.parity.agree + "/10" : " " + best.parity.agree + "/10") : "");
     $("heroSet").textContent = best.displayName + " (" + best.symbol + ")";
     const m = best.metrics;
     $("heroWhy").textContent =
@@ -485,7 +598,7 @@ if (typeof module !== "undefined" && module.exports){
       " over the last 30 closed 1-min candles.";
 
     let html = "<table><thead><tr>" +
-      "<th>#</th><th>Market</th><th>Score</th><th>Trend</th><th>Strong</th><th>Efficiency</th><th>Tick mom.</th><th>Range</th><th>Bot scanner</th>" +
+      "<th>#</th><th>Market</th><th>Score</th><th>Trend</th><th>Strong</th><th>Efficiency</th><th>Tick mom.</th><th>Range</th><th>Bot scanner (RF · EO)</th>" +
       "</tr></thead><tbody>";
     rows.forEach((r, i) => {
       const you = r.symbol === "R_10" ? ' class="you"' : "";
@@ -498,7 +611,7 @@ if (typeof module !== "undefined" && module.exports){
         '<td class="num">' + fmtPct(r.metrics.eff) + "</td>" +
         '<td class="num">' + fmtPct(r.metrics.tickmom) + "</td>" +
         '<td class="num">' + fmtPct(r.metrics.range) + "</td>" +
-        "<td>" + badge(r.ready, r.symbol) + "</td>" +
+        "<td>" + badge(r.ready, r.symbol) + " " + parityBadge(r.parity, r.symbol) + "</td>" +
         "</tr>";
     });
     html += "</tbody></table>";
@@ -529,7 +642,7 @@ if (typeof module !== "undefined" && module.exports){
 
   /* expose core globally for the app + tests */
   window.CORE = {
-    CONFIG, computeMetrics, botReadyState, percentileRanks, rankRows, analyzeSymbol, sign
+    CONFIG, computeMetrics, botReadyState, parityState, lastDigitOf, percentileRanks, rankRows, analyzeSymbol, sign
   };
 })();
 </script>

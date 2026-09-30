@@ -1,8 +1,14 @@
-# Deriv V10 Streak-Scaling Bot — strategy file
+# Deriv V10 Streak-Scaling Bots — strategy files
 
-**Files:** `Deriv_V10_Streak_Scaling_Bot.xml` (the strategy — load it in **Bot Builder → Load strategy → Local → Select an XML file from your device**, the dialog in your screenshot; dragging it onto the workspace also works) and `Best_Market_Analyzer.html` (standalone tool that ranks the best market for it — see below).
+**Files:**
 
-Built against Deriv's own open-source bot template (`deriv-com/trading-bot-template`) — every block type, field name and dropdown value in this file was verified against their official block definitions, and the file passes a real Blockly parse test (245 blocks, 0 warnings).
+| File | What it is |
+|---|---|
+| `Deriv_V10_Streak_Scaling_Bot.xml` | **Rise/Fall strategy** (4-check trend scanner) — load via **Bot Builder → Load strategy → Local → Select an XML file**; dragging onto the workspace works too |
+| `Deriv_V10_EvenOdd_Bot.xml` | **Even/Odd strategy** (parity-streak gate) — same money management, digit contracts |
+| `Best_Market_Analyzer.html` | Companion ranking tool with live badges for **both** bots (hosted: `https://mwanzajerry14-bit.github.io/Deriv-bot/`) |
+
+Built against Deriv's own open-source bot template (`deriv-com/trading-bot-template`) — every block type, field name and dropdown value in both files was verified against their official block definitions, and both pass a real Blockly parse test (Rise/Fall: 245 blocks, Even/Odd: 289 blocks, 0 warnings each).
 
 ---
 
@@ -43,6 +49,23 @@ setup to line up (the 10-tick cooldown still applies between trades). The scanne
 `tick`, `ticks` (last-1000-tick list), and `read_ohlc` blocks — all standard Deriv Bot analysis
 blocks sitting right there in your Blocks menu under **Tick and candle analysis**.
 
+### Even/Odd variant (`Deriv_V10_EvenOdd_Bot.xml`) — parity-streak gate
+
+Identical money management (2%→4%→8% cap, reset on win, TP +5% / SL −10%, 10-tick cooldown,
+5-tick duration, R_10), but trades **digit contracts** — `Even`/`Odd` — and replaces the trend
+scanner with a **parity gate** that must pass before every purchase:
+
+| # | Check | What it verifies | Formula |
+|---|---|---|---|
+| A | **Anchor** | The newest tick's parity still matches the parity **10 ticks back** (no recent flip) | `digit[end 1] is even` == `digit[end 11] is even` |
+| B | **Agreement** | At least **6 of the last 10** digits share the newest tick's parity | `Σ (digit[end i] is even == digit[end 1] is even), i=1..10 ≥ 6` |
+
+If both pass, the bot purchases **Even** when the newest digit is even, otherwise **Odd**.
+Digits come from Deriv's own `Last digits list` block (`Bot.getLastDigitList` — pip-accurated,
+so `"6012.30"` → digit 0 → Even), and the parity test is the `is even` number-property block —
+everything under **Tick and candle analysis** in your Blocks menu. The analyzer's green **EO**
+badge mirrors these two checks live.
+
 ### Stake escalation (exactly as chosen)
 
 ```
@@ -82,11 +105,12 @@ Session take-profit/stop-loss thresholds are fixed at start-up from the starting
 Your bot's blocks can only see the market they're loaded with — so the companion tool ranks
 **every Volatility index** for you, then you set the winner in Trade parameters (two clicks).
 
-**Run it:** double-click `Best_Market_Analyzer.html` (or drag it into Chrome). It connects
-from *your* browser straight to Deriv's public WebSocket API (no login, `app_id 1089`) —
-it must run on your machine because Deriv's data API isn't reachable from sandboxed previews.
-If your network blocks it, serve the folder with `python -m http.server 8000` and open
-`http://localhost:8000/Best_Market_Analyzer.html`.
+**Run it:** open **`https://mwanzajerry14-bit.github.io/Deriv-bot/`** and press *Scan markets* —
+or double-click the downloaded `Best_Market_Analyzer.html` in Chrome. It connects from *your*
+browser straight to Deriv's public WebSocket API (no login, `app_id 1089`).
+If a scan fails, the red panel runs an automatic **per-endpoint connection test** (WebSocket
+reachability per host vs plain HTTPS) and tells you what to try — usually an ad-block/VPN
+extension, a different network (phone hotspot), or `status.deriv.com`.
 
 **What it measures per market** (last 30 closed 1-min candles + last 100 ticks — the same
 data your bot's scanner reads):
@@ -99,11 +123,11 @@ data your bot's scanner reads):
 | Tick-stream momentum | 15% | How persistently the bot's 10-tick check has held over 100 ticks |
 | Volatility (avg range %) | 20% | 5-tick contracts need movement; rank-based so units never skew it |
 
-Scores are weighted percentile ranks (0–100). The **bot-scanner badge** on each row mirrors
-your bot's exact four checks live — a green `CALL · BOT-READY 4/4` badge means the bot, if
-loaded with that market right now, would take the trade. Your current market (**R_10**) is
-highlighted, the hero card tells you the #1 market and exactly what to set in
-**Trade parameters → Market**. Auto-refreshes every 60s.
+Scores are weighted percentile ranks (0–100). Each row carries two live badges mirroring the
+bots' exact entry checks: **RF** (`CALL · BOT-READY 4/4` = the Rise/Fall bot would take that
+market right now) and **EO** (`EO EVEN · READY 8/10` = the Even/Odd parity gate passes).
+Your current market (**R_10**) is highlighted, the hero card tells you the #1 market and
+exactly what to set in **Trade parameters → Market**. Auto-refreshes every 60s.
 
 ## Important risk notes
 

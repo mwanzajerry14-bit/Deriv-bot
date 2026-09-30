@@ -161,5 +161,55 @@ function flat() {
   check("analyze: all-closed series handled", row2.isLive === false && row2.closedCount === 30, JSON.stringify({ isLive: row2.isLive, n: row2.closedCount }));
 }
 
+// ---------- 9. parity gate (Even/Odd bot mirror) ----------
+{
+  const mk = ds => ds.map(d => "123." + d);   // price STRINGS; last char = digit
+
+  const allEven = mk([2, 4, 6, 8, 0, 2, 4, 6, 8, 0, 2]);
+  const p1 = core.parityState(allEven);
+  check("parity: all-even -> ready Even 10/10",
+    p1.ready && p1.side === "Even" && p1.agree === 10 && p1.anchorOK, JSON.stringify(p1));
+
+  const allOdd = mk([1, 3, 5, 7, 9, 1, 3, 5, 7, 9, 3]);
+  const p2 = core.parityState(allOdd);
+  check("parity: all-odd -> ready Odd 10/10",
+    p2.ready && p2.side === "Odd" && p2.agree === 10 && p2.anchorOK, JSON.stringify(p2));
+
+  // trailing zero preserved in string: digit 0 -> Even (same as bot's pip-formatted list)
+  const tz = mk([1, 3, 5, 7, 9, 1, 3, 5, 7, 9]).concat(["6012.30"]);
+  const p3 = core.parityState(tz);
+  check("parity: trailing-zero '6012.30' -> Even", p3.side === "Even", JSON.stringify(p3));
+
+  // anchor mismatch: newest even, 11-back odd -> not ready despite agree 10
+  const anch = ["123.1"].concat(mk([2, 4, 6, 8, 0, 2, 4, 6, 8, 2]));
+  const p4 = core.parityState(anch);
+  check("parity: anchor mismatch -> not ready",
+    !p4.ready && p4.anchorOK === false && p4.agree === 10 && p4.side === "Even", JSON.stringify(p4));
+
+  // exactly 6/10 with good anchor -> ready (bot's GTE 6)
+  const mix6 = ["123.0", "123.1", "123.1", "123.1", "123.1",
+                "123.2", "123.4", "123.6", "123.8", "123.0", "123.2"];
+  const p5 = core.parityState(mix6);
+  check("parity: agree 6/10 + anchor -> ready",
+    p5.ready && p5.agree === 6 && p5.anchorOK && p5.side === "Even", JSON.stringify(p5));
+
+  // 5/10 -> not ready
+  const mix5 = ["123.0", "123.1", "123.1", "123.1", "123.1", "123.1",
+                "123.2", "123.4", "123.6", "123.0", "123.2"];
+  const p6 = core.parityState(mix5);
+  check("parity: agree 5/10 -> not ready",
+    !p6.ready && p6.agree === 5 && p6.anchorOK, JSON.stringify(p6));
+
+  // too short
+  const p7 = core.parityState(["123.4", "123.5"]);
+  check("parity: <11 ticks -> guarded", !p7.ready && p7.note.length > 0, JSON.stringify(p7));
+
+  // numeric fallback still yields a digit via String(n)
+  const p8 = core.parityState([100.2, 100.4, 100.6, 100.8, 100.2, 100.4,
+                               100.6, 100.8, 100.2, 100.4, 100.6]);
+  check("parity: numeric prices work too",
+    p8.ready && p8.side === "Even" && p8.agree === 10, JSON.stringify(p8));
+}
+
 console.log(failures === 0 ? "\nALL ANALYZER CORE TESTS PASSED ✓" : `\n${failures} FAILURES ✗`);
 process.exit(failures === 0 ? 0 : 1);

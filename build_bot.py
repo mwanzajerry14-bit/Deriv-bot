@@ -1,9 +1,20 @@
 #!/usr/bin/env python3
-"""Generate a Deriv Bot (bot.deriv.com) strategy XML: V10 streak-scaling bot.
+"""Generate Deriv Bot (bot.deriv.com) strategy XMLs: V10 streak-scaling bots.
 
-Strategy (per user choices):
-  - Market:        Volatility 10 Index (R_10), Rise/Fall, both directions
-  - Entry signal:  direction of the last closed 1-minute candle (close > open -> Call, else Put)
+Two variants are written, sharing all money management:
+
+  1. Deriv_V10_Streak_Scaling_Bot.xml   — Rise/Fall
+     Market:  Volatility 10 Index (R_10), contract side from a 4-check
+     trend scanner (side = last CLOSED 1-min candle; live candle agrees,
+     tick held beyond the close, body >= 30% of range, tick stream agrees).
+
+  2. Deriv_V10_EvenOdd_Bot.xml          — Even/Odd (digit contracts)
+     Market:  Volatility 10 Index (R_10), parity from a parity-streak
+     scanner: last tick's parity == parity 10 ticks back (digit FROM_END 11)
+     AND >= 6 of the last 10 ticks share the last tick's parity -> buy the
+     last tick's parity (Even if last digit even, else Odd).
+
+Shared spec (both variants):
   - Cooldown:      10 ticks between trades
   - Duration:      5 ticks
   - Sizing:        stake = 2% of balance; x2 after each consecutive loss,
@@ -100,6 +111,10 @@ def iff(cond, do, els=None):
     return B("controls_if", body)
 
 
+def ternary(cond, a, b):
+    return B("logic_ternary", V("IF", cond) + V("THEN", a) + V("ELSE", b))
+
+
 def balance():
     return B("balance", F("BALANCE_TYPE", "NUM"))
 
@@ -128,16 +143,32 @@ def tick_price():
     return B("tick")
 
 
-def tick_back(n):
-    """Tick price n positions from the end of the last-1000-ticks list (1 = newest)."""
+def list_back(list_block, n):
+    """Item n positions from the end of a list (1 = newest)."""
     return B(
         "lists_getIndex",
         '<mutation statement="false" at="true"/>'
         + F("MODE", "GET")
         + F("WHERE", "FROM_END")
-        + V("VALUE", B("ticks"))
+        + V("VALUE", list_block)
         + V("AT", num(n)),
     )
+
+
+def tick_back(n):
+    """Tick price n positions from the end of the last-1000-ticks list (1 = newest)."""
+    return list_back(B("ticks"), n)
+
+
+def digit_back(n):
+    """Last digit n positions from the end of the last-1000-ticks list (1 = newest).
+    Uses Deriv's `lastDigitList` (Bot.getLastDigitList — pip-accurate digits)."""
+    return list_back(B("lastDigitList"), n)
+
+
+def is_even(expr):
+    """Deriv math_number_property: '<expr> is even' (Boolean output)."""
+    return B("math_number_property", V("NUMBER_TO_CHECK", expr) + F("PROPERTY", "EVEN"))
 
 
 def and_all(conds):
@@ -180,7 +211,7 @@ def notify_var(etype, sound, var_name, var_vid):
 
 
 # ---------- variables ----------
-VAR_NAMES = [
+BASE_VARS = [
     "stake",
     "bal",
     "base_stake",
@@ -192,127 +223,141 @@ VAR_NAMES = [
     "cooldown",
     "msg",
 ]
-VID = {n: rid(20) for n in VAR_NAMES}
 
 # ---------- trade definition ----------
-market = B(
-    "trade_definition_market",
-    F("MARKET_LIST", "synthetic_index")
-    + F("SUBMARKET_LIST", "random_index")
-    + F("SYMBOL_LIST", "R_10")
-    + NEXT(
-        B(
-            "trade_definition_tradetype",
-            F("TRADETYPECAT_LIST", "callput")
-            + F("TRADETYPE_LIST", "callput")
-            + NEXT(
-                B(
-                    "trade_definition_contracttype",
-                    F("TYPE_LIST", "both")
-                    + NEXT(
-                        B(
-                            "trade_definition_candleinterval",
-                            F("CANDLEINTERVAL_LIST", "60")
-                            + NEXT(
-                                B(
-                                    "trade_definition_restartbuysell",
-                                    F("TIME_MACHINE_ENABLED", "FALSE")
-                                    + NEXT(
-                                        B(
-                                            "trade_definition_restartonerror",
-                                            F("RESTARTONERROR", "TRUE"),
-                                        )
-                                    ),
-                                )
-                            ),
-                        )
-                    ),
-                )
+def market_block(mode):
+    if mode == "rise_fall":
+        tradetype = F("TRADETYPECAT_LIST", "callput") + F("TRADETYPE_LIST", "callput")
+    elif mode == "evenodd":
+        tradetype = F("TRADETYPECAT_LIST", "digits") + F("TRADETYPE_LIST", "evenodd")
+    else:
+        raise ValueError(mode)
+    return B(
+        "trade_definition_market",
+        F("MARKET_LIST", "synthetic_index")
+        + F("SUBMARKET_LIST", "random_index")
+        + F("SYMBOL_LIST", "R_10")
+        + NEXT(
+            B(
+                "trade_definition_tradetype",
+                tradetype
+                + NEXT(
+                    B(
+                        "trade_definition_contracttype",
+                        F("TYPE_LIST", "both")
+                        + NEXT(
+                            B(
+                                "trade_definition_candleinterval",
+                                F("CANDLEINTERVAL_LIST", "60")
+                                + NEXT(
+                                    B(
+                                        "trade_definition_restartbuysell",
+                                        F("TIME_MACHINE_ENABLED", "FALSE")
+                                        + NEXT(
+                                            B(
+                                                "trade_definition_restartonerror",
+                                                F("RESTARTONERROR", "TRUE"),
+                                            )
+                                        ),
+                                    )
+                                ),
+                            )
+                        ),
+                    )
+                ),
+            )
+        ),
+        ' deletable="false" movable="false"',
+    )
+
+
+def init_chain(mode, VID):
+    # INITIALIZATION chain
+    start_text = (
+        "▶ Bot started — market scan armed (trend, momentum, strength, tick-stream; 4/4 to trade). Balance:"
+        if mode == "rise_fall"
+        else "▶ Even/Odd bot started — parity scan armed (anchor 10 ticks back + 6/10 agreement; 2/2 to trade). Balance:"
+    )
+    return chain(
+        [
+            setv("bal", VID["bal"], balance()),
+            iff(
+                compare("LTE", get("bal", VID["bal"]), num(0)),
+                setv("bal", VID["bal"], num(100)),
             ),
-        )
-    ),
-    ' deletable="false" movable="false"',
-)
+            setv("base_stake", VID["base_stake"], round2(arith("MULTIPLY", get("bal", VID["bal"]), num(0.02)))),
+            iff(
+                compare("LT", get("base_stake", VID["base_stake"]), num(0.35)),
+                setv("base_stake", VID["base_stake"], num(0.35)),
+            ),
+            setv("cap_stake", VID["cap_stake"], round2(arith("MULTIPLY", get("bal", VID["bal"]), num(0.08)))),
+            iff(
+                compare("LT", get("cap_stake", VID["cap_stake"]), num(0.35)),
+                setv("cap_stake", VID["cap_stake"], num(0.35)),
+            ),
+            setv("stake", VID["stake"], get("base_stake", VID["base_stake"])),
+            setv("streak", VID["streak"], num(0)),
+            setv("wait", VID["wait"], num(0)),
+            setv("cooldown", VID["cooldown"], num(10)),
+            setv(
+                "take_profit",
+                VID["take_profit"],
+                arith("MULTIPLY", get("bal", VID["bal"]), num(0.05)),
+            ),
+            setv(
+                "stop_loss",
+                VID["stop_loss"],
+                arith("MULTIPLY", get("bal", VID["bal"]), num(0.10)),
+            ),
+            text_join(
+                "msg",
+                VID["msg"],
+                [
+                    start_text,
+                    X(get("bal", VID["bal"])),
+                    "| Take-profit:",
+                    X(get("take_profit", VID["take_profit"])),
+                    "| Stop-loss:",
+                    X(get("stop_loss", VID["stop_loss"])),
+                ],
+            ),
+            notify_var("info", "announcement", "msg", VID["msg"]),
+        ]
+    )
 
-# INITIALIZATION chain
-init = chain(
-    [
-        setv("bal", VID["bal"], balance()),
-        iff(
-            compare("LTE", get("bal", VID["bal"]), num(0)),
-            setv("bal", VID["bal"], num(100)),
-        ),
-        setv("base_stake", VID["base_stake"], round2(arith("MULTIPLY", get("bal", VID["bal"]), num(0.02)))),
-        iff(
-            compare("LT", get("base_stake", VID["base_stake"]), num(0.35)),
-            setv("base_stake", VID["base_stake"], num(0.35)),
-        ),
-        setv("cap_stake", VID["cap_stake"], round2(arith("MULTIPLY", get("bal", VID["bal"]), num(0.08)))),
-        iff(
-            compare("LT", get("cap_stake", VID["cap_stake"]), num(0.35)),
-            setv("cap_stake", VID["cap_stake"], num(0.35)),
-        ),
-        setv("stake", VID["stake"], get("base_stake", VID["base_stake"])),
-        setv("streak", VID["streak"], num(0)),
-        setv("wait", VID["wait"], num(0)),
-        setv("cooldown", VID["cooldown"], num(10)),
-        setv(
-            "take_profit",
-            VID["take_profit"],
-            arith("MULTIPLY", get("bal", VID["bal"]), num(0.05)),
-        ),
-        setv(
-            "stop_loss",
-            VID["stop_loss"],
-            arith("MULTIPLY", get("bal", VID["bal"]), num(0.10)),
-        ),
-        text_join(
-            "msg",
-            VID["msg"],
-            [
-                "▶ Bot started — market scan armed (trend, momentum, strength, tick-stream; 4/4 to trade). Balance:",
-                X(get("bal", VID["bal"])),
-                "| Take-profit:",
-                X(get("take_profit", VID["take_profit"])),
-                "| Stop-loss:",
-                X(get("stop_loss", VID["stop_loss"])),
-            ],
-        ),
-        notify_var("info", "announcement", "msg", VID["msg"]),
-    ]
-)
 
-trade_options = B(
-    "trade_definition_tradeoptions",
-    '<mutation has_first_barrier="false" has_second_barrier="false" has_prediction="false"/>'
-    + F("DURATIONTYPE_LIST", "t")
-    + F("CURRENCY_LIST", "USD")
-    + V("DURATION", SH("math_number_positive", F("NUM", "5")))
-    + V("AMOUNT", SH("math_number_positive", F("NUM", "1")) + get("stake", VID["stake"])),
-)
+def trade_options_block(VID):
+    return B(
+        "trade_definition_tradeoptions",
+        '<mutation has_first_barrier="false" has_second_barrier="false" has_prediction="false"/>'
+        + F("DURATIONTYPE_LIST", "t")
+        + F("CURRENCY_LIST", "USD")
+        + V("DURATION", SH("math_number_positive", F("NUM", "5")))
+        + V("AMOUNT", SH("math_number_positive", F("NUM", "1")) + get("stake", VID["stake"])),
+    )
 
-trade_definition = B(
-    "trade_definition",
-    S("TRADE_OPTIONS", market)
-    + S("INITIALIZATION", init)
-    + S("SUBMARKET", trade_options),
-    ' x="0" y="0"',
-)
 
 # ---------- before purchase: market scan gate ----------
 # Deriv candle indexing (verified in Ticks.js getOhlcFromEnd + ticks_service.js):
 #   index 1 = LAST element of the series = the LIVE (forming) 1-min candle
 #   index 2 = the last CLOSED 1-min candle
-# Scanner (side decided by the last CLOSED candle; all 4 checks must pass):
+# Rise/Fall scanner (side decided by the last CLOSED candle; all 4 checks must pass):
 #   side   - last closed candle closed green/red          (close[2] vs open[2])
 #   1. live agrees  - the live minute is still on the same side (close[1] vs open[1])
 #   2. held beyond  - current tick beyond the last closed candle's close (tick vs close[2])
 #   3. strength     - last CLOSED candle body >= 30% of its range (strong, no doji)
 #   4. tick stream  - net move over the last 10 ticks agrees with the side
+# Even/Odd scanner (parity-streak; both checks must pass):
+#   anchor    - parity of newest digit (FROM_END 1) == parity of digit 10 ticks back (FROM_END 11)
+#   agreement - >= 6 of the last 10 digits share the newest tick's parity
+#   -> purchase Even if newest digit is even, else Odd
 purchase_call = B("purchase", F("PURCHASE_LIST", "CALL"))
 purchase_put = B("purchase", F("PURCHASE_LIST", "PUT"))
+purchase_even = B("purchase", F("PURCHASE_LIST", "DIGITEVEN"))
+purchase_odd = B("purchase", F("PURCHASE_LIST", "DIGITODD"))
 
-def scan(up: bool):
+
+def scan_trend(up: bool):
     c2o = read_ohlc("open", 2)
     c2c = read_ohlc("close", 2)
     c2h = read_ohlc("high", 2)
@@ -333,160 +378,229 @@ def scan(up: bool):
         compare("LT", tick_back(1), tick_back(10)),                                       # 4. tick stream falling
     ])
 
-direction_if = iff(
-    compare("GT", read_ohlc("close", 2), read_ohlc("open", 2)),
-    iff(scan(up=True), purchase_call),
-    iff(scan(up=False), purchase_put),
-)
 
-gate = iff(compare("LTE", get("wait", VID["wait"]), num(0)), direction_if)
+def parity_conditions(VID):
+    """anchor + agreement, using the even_side variable set just before."""
+    anchor = compare("EQ", get("even_side", VID["even_side"]), is_even(digit_back(11)))
+    terms = []
+    for i in range(1, 11):
+        terms.append(
+            ternary(
+                compare("EQ", is_even(digit_back(i)), get("even_side", VID["even_side"])),
+                num(1),
+                num(0),
+            )
+        )
+    agree = terms[0]
+    for t in terms[1:]:
+        agree = arith("ADD", agree, t)
+    return and_all([anchor, compare("GTE", agree, num(6))])
 
-before_purchase = B(
-    "before_purchase",
-    S("BEFOREPURCHASE_STACK", gate),
-    ' x="0" y="760"',
-)
+
+def before_purchase_block(mode, VID):
+    if mode == "rise_fall":
+        direction_if = iff(
+            compare("GT", read_ohlc("close", 2), read_ohlc("open", 2)),
+            iff(scan_trend(up=True), purchase_call),
+            iff(scan_trend(up=False), purchase_put),
+        )
+        gate = iff(compare("LTE", get("wait", VID["wait"]), num(0)), direction_if)
+    else:
+        even_odd_if = iff(
+            get("even_side", VID["even_side"]),
+            purchase_even,
+            purchase_odd,
+        )
+        inner = chain(
+            [
+                setv("even_side", VID["even_side"], is_even(digit_back(1))),
+                iff(parity_conditions(VID), even_odd_if),
+            ]
+        )
+        gate = iff(compare("LTE", get("wait", VID["wait"]), num(0)), inner)
+    return B(
+        "before_purchase",
+        S("BEFOREPURCHASE_STACK", gate),
+        ' x="0" y="760"',
+    )
+
 
 # ---------- after purchase ----------
-win_branch = chain(
-    [
-        setv("bal", VID["bal"], balance()),
-        setv(
-            "base_stake",
-            VID["base_stake"],
-            round2(arith("MULTIPLY", get("bal", VID["bal"]), num(0.02))),
-        ),
-        iff(
-            compare("LT", get("base_stake", VID["base_stake"]), num(0.35)),
-            setv("base_stake", VID["base_stake"], num(0.35)),
-        ),
-        setv(
-            "cap_stake",
-            VID["cap_stake"],
-            round2(arith("MULTIPLY", get("bal", VID["bal"]), num(0.08))),
-        ),
-        iff(
-            compare("LT", get("cap_stake", VID["cap_stake"]), num(0.35)),
-            setv("cap_stake", VID["cap_stake"], num(0.35)),
-        ),
-        setv("stake", VID["stake"], get("base_stake", VID["base_stake"])),
-        setv("streak", VID["streak"], num(0)),
-    ]
-)
+def after_purchase_block(VID):
+    win_branch = chain(
+        [
+            setv("bal", VID["bal"], balance()),
+            setv(
+                "base_stake",
+                VID["base_stake"],
+                round2(arith("MULTIPLY", get("bal", VID["bal"]), num(0.02))),
+            ),
+            iff(
+                compare("LT", get("base_stake", VID["base_stake"]), num(0.35)),
+                setv("base_stake", VID["base_stake"], num(0.35)),
+            ),
+            setv(
+                "cap_stake",
+                VID["cap_stake"],
+                round2(arith("MULTIPLY", get("bal", VID["bal"]), num(0.08))),
+            ),
+            iff(
+                compare("LT", get("cap_stake", VID["cap_stake"]), num(0.35)),
+                setv("cap_stake", VID["cap_stake"], num(0.35)),
+            ),
+            setv("stake", VID["stake"], get("base_stake", VID["base_stake"])),
+            setv("streak", VID["streak"], num(0)),
+        ]
+    )
 
-lose_branch = chain(
-    [
-        setv(
-            "streak",
-            VID["streak"],
-            arith("ADD", get("streak", VID["streak"]), num(1)),
-        ),
-        setv(
-            "stake",
-            VID["stake"],
-            arith("MULTIPLY", get("stake", VID["stake"]), num(2)),
-        ),
-        iff(
-            compare("GT", get("stake", VID["stake"]), get("cap_stake", VID["cap_stake"])),
-            setv("stake", VID["stake"], get("cap_stake", VID["cap_stake"])),
-        ),
-    ]
-)
+    lose_branch = chain(
+        [
+            setv(
+                "streak",
+                VID["streak"],
+                arith("ADD", get("streak", VID["streak"]), num(1)),
+            ),
+            setv(
+                "stake",
+                VID["stake"],
+                arith("MULTIPLY", get("stake", VID["stake"]), num(2)),
+            ),
+            iff(
+                compare("GT", get("stake", VID["stake"]), get("cap_stake", VID["cap_stake"])),
+                setv("stake", VID["stake"], get("cap_stake", VID["cap_stake"])),
+            ),
+        ]
+    )
 
-result_if = iff(
-    B("contract_check_result", F("CHECK_RESULT", "win")),
-    win_branch,
-    lose_branch,
-)
+    result_if = iff(
+        B("contract_check_result", F("CHECK_RESULT", "win")),
+        win_branch,
+        lose_branch,
+    )
 
-sl_check = iff(
-    compare(
-        "LTE",
-        total_profit(),
-        B("math_single", F("OP", "NEG") + V("NUM", get("stop_loss", VID["stop_loss"]))),
-    ),
-    notify("error", "severe-error", B("text", F("TEXT", "🛑 Stop-loss limit hit — session closed. Check the Journal for final P/L."))),
-    B("trade_again"),
-)
-
-tp_check = iff(
-    compare("GTE", total_profit(), get("take_profit", VID["take_profit"])),
-    notify("success", "earned-money", B("text", F("TEXT", "🎯 Take-profit target reached — session closed. Check the Journal for final P/L."))),
-    sl_check,
-)
-
-after_purchase = B(
-    "after_purchase",
-    S(
-        "AFTERPURCHASE_STACK",
-        chain(
-            [
-                setv("wait", VID["wait"], get("cooldown", VID["cooldown"])),
-                result_if,
-                text_join(
-                    "msg",
-                    VID["msg"],
-                    [
-                        "✅ Trade closed — streak:",
-                        X(get("streak", VID["streak"])),
-                        "| next stake:",
-                        X(get("stake", VID["stake"])),
-                        "| session P/L:",
-                        X(total_profit()),
-                    ],
-                ),
-                notify_var("info", "silent", "msg", VID["msg"]),
-                tp_check,
-            ]
+    sl_check = iff(
+        compare(
+            "LTE",
+            total_profit(),
+            B("math_single", F("OP", "NEG") + V("NUM", get("stop_loss", VID["stop_loss"]))),
         ),
-    ),
-    ' x="960" y="0"',
-)
+        notify("error", "severe-error", B("text", F("TEXT", "🛑 Stop-loss limit hit — session closed. Check the Journal for final P/L."))),
+        B("trade_again"),
+    )
+    tp_check = iff(
+        compare("GTE", total_profit(), get("take_profit", VID["take_profit"])),
+        notify("success", "earned-money", B("text", F("TEXT", "🎯 Take-profit target reached — session closed. Check the Journal for final P/L."))),
+        sl_check,
+    )
+
+    return B(
+        "after_purchase",
+        S(
+            "AFTERPURCHASE_STACK",
+            chain(
+                [
+                    setv("wait", VID["wait"], get("cooldown", VID["cooldown"])),
+                    result_if,
+                    text_join(
+                        "msg",
+                        VID["msg"],
+                        [
+                            "✅ Trade closed — streak:",
+                            X(get("streak", VID["streak"])),
+                            "| next stake:",
+                            X(get("stake", VID["stake"])),
+                            "| session P/L:",
+                            X(total_profit()),
+                        ],
+                    ),
+                    notify_var("info", "silent", "msg", VID["msg"]),
+                    tp_check,
+                ]
+            ),
+        ),
+        ' x="960" y="0"',
+    )
+
 
 # ---------- tick analysis ----------
-tick_analysis = B(
-    "tick_analysis",
-    S(
-        "TICKANALYSIS_STACK",
-        B("math_change", F("VAR", "wait", VID["wait"]) + V("DELTA", SH("math_number", F("NUM", "-1")))),
-    ),
-    ' x="0" y="1400"',
-)
+def tick_analysis_block(VID):
+    return B(
+        "tick_analysis",
+        S(
+            "TICKANALYSIS_STACK",
+            B("math_change", F("VAR", "wait", VID["wait"]) + V("DELTA", SH("math_number", F("NUM", "-1")))),
+        ),
+        ' x="0" y="1400"',
+    )
+
 
 # ---------- assemble ----------
-variables = "".join(
-    f'<variable type="" id="{VID[n]}" islocal="false" iscloud="false">{n}</variable>'
-    for n in VAR_NAMES
-)
+def build(mode):
+    var_names = list(BASE_VARS)
+    if mode == "evenodd":
+        var_names.append("even_side")
+    VID = {n: rid(20) for n in var_names}
 
-tops = [trade_definition, after_purchase, before_purchase, tick_analysis]
-body = "\n  ".join(tops)
+    market = market_block(mode)
+    init = init_chain(mode, VID)
+    trade_options = trade_options_block(VID)
+    trade_definition = B(
+        "trade_definition",
+        S("TRADE_OPTIONS", market)
+        + S("INITIALIZATION", init)
+        + S("SUBMARKET", trade_options),
+        ' x="0" y="0"',
+    )
+    before_purchase = before_purchase_block(mode, VID)
+    after_purchase = after_purchase_block(VID)
+    tick_analysis = tick_analysis_block(VID)
 
-xml = (
-    '<?xml version="1.0" ?>\n'
-    '<xml xmlns="http://www.w3.org/1999/xhtml" collection="false" is_dbot="true">\n'
-    f"  <variables>{variables}</variables>\n"
-    f"  {body}\n"
-    "</xml>\n"
-)
+    variables = "".join(
+        f'<variable type="" id="{rid(20)}" islocal="false" iscloud="false">{n}</variable>'
+        for n in var_names
+    )
 
-# Safety net: Blockly requires globally unique block/shadow ids. If a generated
-# sub-expression string is reused in two places, give each occurrence its own id
-# (semantics unchanged: they become separate, identical blocks in the workspace).
-import re as _re
-_seen_ids = set()
-def _uniq(m):
-    whole, idv = m.group(0), m.group(1)
-    if idv in _seen_ids:
-        new_id = rid(20)
-        whole = whole.replace(f'id="{idv}"', f'id="{new_id}"', 1)
-        _seen_ids.add(new_id)
-    else:
-        _seen_ids.add(idv)
-    return whole
-xml = _re.sub(r'<(?:block|shadow)\b[^>]*?\bid="([^"]+)"', _uniq, xml)
+    tops = [trade_definition, after_purchase, before_purchase, tick_analysis]
+    body = "\n  ".join(tops)
 
-out = __file__.replace("build_bot.py", "Deriv_V10_Streak_Scaling_Bot.xml")
-with open(out, "w", encoding="utf-8") as f:
-    f.write(xml)
-print("wrote", out, len(xml), "bytes")
+    xml = (
+        '<?xml version="1.0" ?>\n'
+        '<xml xmlns="http://www.w3.org/1999/xhtml" collection="false" is_dbot="true">\n'
+        f"  <variables>{variables}</variables>\n"
+        f"  {body}\n"
+        "</xml>\n"
+    )
+
+    # Safety net: Blockly requires globally unique block/shadow ids. If a generated
+    # sub-expression string is reused in two places, give each occurrence its own id
+    # (semantics unchanged: they become separate, identical blocks in the workspace).
+    import re as _re
+    seen_ids = set()
+
+    def _uniq(m):
+        whole, idv = m.group(0), m.group(1)
+        if idv in seen_ids:
+            new_id = rid(20)
+            whole = whole.replace(f'id="{idv}"', f'id="{new_id}"', 1)
+            seen_ids.add(new_id)
+        else:
+            seen_ids.add(idv)
+        return whole
+
+    return _re.sub(r'<(?:block|shadow)\b[^>]*?\bid="([^"]+)"', _uniq, xml)
+
+
+import os
+HERE = os.path.dirname(os.path.abspath(__file__))
+OUTPUTS = {
+    "rise_fall": "Deriv_V10_Streak_Scaling_Bot.xml",
+    "evenodd": "Deriv_V10_EvenOdd_Bot.xml",
+}
+
+if __name__ == "__main__":
+    for mode, fname in OUTPUTS.items():
+        xml = build(mode)
+        out = os.path.join(HERE, fname)
+        with open(out, "w", encoding="utf-8") as f:
+            f.write(xml)
+        print("wrote", out, len(xml), "bytes")

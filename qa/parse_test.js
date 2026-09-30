@@ -71,6 +71,10 @@ def("text_statement", { values: ["TEXT"], prev: true, next: true });
 def("math_number_positive", { fields: ["NUM"], out: true });
 def("tick", { out: true });
 def("ticks", { out: true });
+// Deriv's lastDigitList (Bot.getLastDigitList) — even/odd variant
+def("lastDigitList", { out: true });
+// Deriv's math_number_property: value NUMBER_TO_CHECK + field PROPERTY (EVEN/ODD/…)
+def("math_number_property", { fields: ["PROPERTY"], values: ["NUMBER_TO_CHECK"], out: true });
 // Deriv's lists_getIndex: fields MODE + WHERE, inputs VALUE + AT (overrides stock Blockly block)
 Blockly.Blocks.lists_getIndex = {
   init() {
