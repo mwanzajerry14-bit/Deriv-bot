@@ -1,0 +1,6 @@
+# third-party reference clones (not my code)
+refs/
+# npm deps + test artifacts
+qa/node_modules/
+qa/_core_extract.js
+__pycache__/

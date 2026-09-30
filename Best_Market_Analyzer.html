@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deriv Best-Market Analyzer</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --line:#2a3140;
+    --txt:#e6edf3; --muted:#8b949e; --accent:#2ea8ff; --green:#2ea043; --red:#f85149;
+    --gold:#e3b341;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.5 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:1100px;margin:0 auto;padding:24px 16px 48px}
+  h1{font-size:22px;margin:0 0 4px}
+  h1 .dot{color:var(--accent)}
+  .sub{color:var(--muted);margin-bottom:18px;font-size:13px}
+  .bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:14px}
+  button{background:var(--accent);border:0;color:#04121f;font-weight:700;padding:9px 16px;border-radius:8px;cursor:pointer;font-size:13px}
+  button:disabled{opacity:.5;cursor:default}
+  button.ghost{background:transparent;border:1px solid var(--line);color:var(--txt);font-weight:600}
+  label.ctl{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:13px;user-select:none;cursor:pointer}
+  .status{flex:1;min-width:220px;color:var(--muted);font-size:13px;text-align:right}
+  .status.err{color:var(--red)}
+  .progress{height:4px;background:var(--panel2);border-radius:4px;overflow:hidden;margin-bottom:16px}
+  .progress>div{height:100%;width:0;background:linear-gradient(90deg,var(--accent),#7ee787);transition:width .3s}
+  .banner{background:#3d1d1f;border:1px solid #f8514955;color:#ffb3ae;border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:13px;display:none}
+  .banner.show{display:block}
+  .banner b{color:#fff}
+  .banner code{background:#00000055;padding:1px 6px;border-radius:4px;font-size:12px}
+  .hero{background:linear-gradient(135deg,#13261b,#161b22 60%);border:1px solid #2ea04355;border-radius:14px;padding:20px;margin-bottom:18px;display:none}
+  .hero.show{display:block}
+  .hero .kicker{color:var(--green);font-size:12px;font-weight:800;letter-spacing:.12em;text-transform:uppercase}
+  .hero .name{font-size:26px;font-weight:800;margin:6px 0 2px}
+  .hero .sym{color:var(--muted);font-family:ui-monospace,Menlo,Consolas,monospace}
+  .hero .why{margin-top:10px;color:#c9d1d9;font-size:13px}
+  .hero .setline{margin-top:12px;background:#00000040;border:1px dashed #2ea04377;border-radius:8px;padding:8px 12px;font-size:13px}
+  .hero .setline b{color:#7ee787}
+  table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  thead th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);text-align:left;padding:10px 10px;border-bottom:1px solid var(--line);background:var(--panel2);white-space:nowrap}
+  tbody td{padding:10px;border-bottom:1px solid var(--line);vertical-align:middle;font-size:13px}
+  tbody tr:last-child td{border-bottom:0}
+  tbody tr.you{background:#2ea8ff11}
+  .rank{color:var(--muted);font-weight:700;width:34px}
+  .mname{font-weight:700}
+  .msym{color:var(--muted);font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
+  .chip{display:inline-block;font-size:10px;font-weight:800;padding:2px 7px;border-radius:20px;letter-spacing:.05em;vertical-align:middle}
+  .chip.bot{background:#2ea8ff22;color:#79c0ff;border:1px solid #2ea8ff55;margin-left:6px}
+  .chip.ready{background:#2ea04333;color:#7ee787;border:1px solid #2ea04388}
+  .chip.part{background:#e3b34122;color:#e3b341;border:1px solid #e3b34155}
+  .chip.no{background:#30363d;color:var(--muted);border:1px solid var(--line)}
+  .scorecell{min-width:150px}
+  .scoreval{font-weight:800;font-variant-numeric:tabular-nums}
+  .sbar{height:6px;background:var(--panel2);border-radius:6px;margin-top:4px;overflow:hidden}
+  .sbar>div{height:100%;background:linear-gradient(90deg,#1f6feb,#7ee787);border-radius:6px}
+  td.num{font-variant-numeric:tabular-nums;color:#c9d1d9}
+  details{margin-top:18px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 16px}
+  summary{cursor:pointer;font-weight:700;color:var(--accent)}
+  details ul{margin:10px 0 4px;padding-left:18px;color:#c9d1d9;font-size:13px}
+  details li{margin:5px 0}
+  .empty{color:var(--muted);text-align:center;padding:36px 10px;background:var(--panel);border:1px solid var(--line);border-radius:12px}
+  footer{color:var(--muted);font-size:12px;margin-top:22px;line-height:1.7}
+  footer code{background:var(--panel2);padding:1px 6px;border-radius:4px}
+  .skipped{color:var(--gold);font-size:12px;margin:8px 2px;display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Deriv Best-Market Analyzer <span class="dot">●</span></h1>
+  <div class="sub">Ranks every Volatility index for your streak-scaling bot — trend persistence, candle strength, directional efficiency, tick-stream momentum and volatility, plus a live “is the bot’s scanner green?” badge that mirrors your bot’s exact entry checks.</div>
+
+  <div class="bar">
+    <button id="btnScan">Scan markets</button>
+    <button id="btnStop" class="ghost" style="display:none">Stop</button>
+    <label class="ctl"><input type="checkbox" id="chkAuto" checked> auto-refresh 60s</label>
+    <label class="ctl"><input type="checkbox" id="chkVol" checked> Volatility indices only</label>
+    <div class="status" id="status">Idle — click “Scan markets” (runs from YOUR browser via Deriv’s public API).</div>
+  </div>
+  <div class="progress"><div id="prog"></div></div>
+  <div class="banner" id="banner"></div>
+  <div class="skipped" id="skipped"></div>
+
+  <div class="hero" id="hero">
+    <div class="kicker">Best market right now</div>
+    <div class="name" id="heroName">—</div>
+    <div class="sym" id="heroSym">—</div>
+    <div class="why" id="heroWhy"></div>
+    <div class="setline">Set your bot: <b>Trade parameters → Market</b> → <b id="heroSet">—</b> &nbsp;·&nbsp; then Run on demo first.</div>
+  </div>
+
+  <div id="tableArea"><div class="empty">No scan yet. Press <b>Scan markets</b>.</div></div>
+
+  <details>
+    <summary>How the ranking works</summary>
+    <ul>
+      <li><b>Trend persistence (25%)</b> — % of adjacent closed 1-min candles that closed in the same direction. Higher = trends run instead of chopping.</li>
+      <li><b>Candle strength (20%)</b> — % of the last 30 closed candles whose body was ≥ 30% of their range — the exact “no-doji” test your bot’s scanner demands.</li>
+      <li><b>Directional efficiency (20%)</b> — net travel ÷ path travelled over the last 30 candles. High = price actually goes somewhere.</li>
+      <li><b>Tick-stream momentum (15%)</b> — how consistently the 10-tick momentum direction has held over the last 100 ticks — your bot’s check #4, measured over time.</li>
+      <li><b>Volatility (20%)</b> — average 1-min range as % of price. 5-tick contracts need movement; rank-based so slow indices never score 0 by units.</li>
+      <li>Scores are weighted <em>percentile ranks</em> within this scan (0–100). The green badge mirrors your bot’s 4 scanner checks exactly (side = last closed candle; live candle agrees; tick beyond that close; body ≥ 0.3×range; 10-tick stream).</li>
+    </ul>
+  </details>
+
+  <footer>
+    <b>How to use:</b> double-click this file (or drag it into Chrome) — it must run in your browser, because Deriv’s data API is reachable from your network but not from a sandboxed preview iframe.<br>
+    If your browser blocks the connection, serve the folder instead: <code>python -m http.server 8000</code> → open <code>http://localhost:8000/Best_Market_Analyzer.html</code>.<br>
+    Data: Deriv public WebSocket API (<code>app_id 1089</code>, no login). Rankings describe <i>recent</i> market structure — they do not predict the future. Always test on demo first. Not financial advice.
+  </footer>
+</div>
+
+<script id="core">
+/* ================= CORE (pure, DOM-free — unit-tested in qa/) ================= */
+const CONFIG = {
+  endpoints: [
+    "wss://ws.derivws.com/websockets/v3?app_id=1089",
+    "wss://ws.binaryws.com/websockets/v3?app_id=1089"
+  ],
+  granularity: 60,          // 1-minute candles, same as the bot's Trade parameters
+  candleCount: 32,          // request 32 (30 closed + live, with buffer)
+  tickCount: 100,           // exactly what the tick-stream check needs
+  strengthRatio: 0.3,       // bot's body/range threshold
+  streamWindow: 10,         // bot's 10-tick window
+  streamSamples: 90,
+  weights: { trend: 0.25, strong: 0.20, eff: 0.20, tickmom: 0.15, range: 0.20 },
+  maxSymbols: 24,
+  chunkSize: 6,
+  requestTimeoutMs: 15000
+};
+
+function sign(x){ return x > 0 ? 1 : (x < 0 ? -1 : 0); }
+
+/* metrics over CLOSED candles only */
+function computeMetrics(closed, prices){
+  const n = closed.length;
+  const out = { trend: 50, strong: 0, eff: 0, tickmom: 50, range: 0, sample: n };
+  if (n < 2 || !prices || prices.length < 11) return out;
+
+  // 1. trend persistence: adjacent candle bodies agree (doji pairs skipped)
+  let pairs = 0, agree = 0;
+  for (let i = 1; i < n; i++){
+    const b0 = sign(closed[i-1].close - closed[i-1].open);
+    const b1 = sign(closed[i].close - closed[i].open);
+    if (b0 !== 0 && b1 !== 0){ pairs++; if (b0 === b1) agree++; }
+  }
+  if (pairs > 0) out.trend = (agree / pairs) * 100;
+
+  // 2. strength: body >= 30% of range (bot's exact test)
+  let valid = 0, strong = 0;
+  for (const c of closed){
+    const range = c.high - c.low;
+    if (range <= 0) continue;
+    valid++;
+    if (Math.abs(c.close - c.open) >= CONFIG.strengthRatio * range) strong++;
+  }
+  if (valid > 0) out.strong = (strong / valid) * 100;
+
+  // 3. directional efficiency: |net| / path over closes
+  let path = 0;
+  for (let i = 1; i < n; i++) path += Math.abs(closed[i].close - closed[i-1].close);
+  const net = Math.abs(closed[n-1].close - closed[0].close);
+  out.eff = path > 1e-12 ? Math.min(100, (net / path) * 100) : 0;
+
+  // 4. tick-stream momentum consistency (bot's 10-tick check, sampled over 100 ticks)
+  const N = prices.length, w = CONFIG.streamWindow;
+  if (N > w + 1){
+    const ref = sign(prices[N-1] - prices[N-1-w]);
+    if (ref === 0) out.tickmom = 50;
+    else {
+      let cnt = 0, tot = 0;
+      const samples = Math.min(CONFIG.streamSamples, N - w);
+      for (let k = 0; k < samples; k++){
+        tot++;
+        if (sign(prices[N-1-k] - prices[N-1-k-w]) === ref) cnt++;
+      }
+      out.tickmom = tot ? (cnt / tot) * 100 : 50;
+    }
+  }
+
+  // 5. mean 1-min range as % of close
+  let rs = 0, rc = 0;
+  for (const c of closed){
+    if (c.close > 0){ rs += (c.high - c.low) / c.close; rc++; }
+  }
+  out.range = rc ? (rs / rc) * 100 : 0;
+  return out;
+}
+
+/* mirror of the bot's 4 scanner checks + side selection (before_purchase block).
+   fullCandles: oldest→newest INCLUDING the live candle (Deriv: read_ohlc idx 1 = last). */
+function botReadyState(fullCandles, prices, nowSec, isLive){
+  const empty = { side: null, passed: 0, checks: [false,false,false,false], note: "no live candle" };
+  if (!isLive || !fullCandles || fullCandles.length < 2 || !prices || prices.length < CONFIG.streamWindow + 1) return empty;
+  const live = fullCandles[fullCandles.length - 1];
+  const closed = fullCandles[fullCandles.length - 2];          // last CLOSED candle = bot's index 2
+  const tick = Number(prices[prices.length - 1]);
+
+  const side = closed.close > closed.open ? "CALL"
+             : closed.close < closed.open ? "PUT" : null;
+  if (!side) return { side: null, passed: 0, checks: [false,false,false,false], note: "flat close" };
+
+  const strength = Math.abs(closed.close - closed.open) >= CONFIG.strengthRatio * (closed.high - closed.low);
+  const streamUp = Number(prices[prices.length - 1]) > Number(prices[prices.length - 1 - CONFIG.streamWindow]);
+  const checks = side === "CALL" ? [
+    live.close > live.open,                 // 1. live minute agrees
+    tick > closed.close,                    // 2. held above last close
+    strength,                               // 3. strong closed candle
+    streamUp                                // 4. tick stream rising
+  ] : [
+    live.close < live.open,
+    tick < closed.close,
+    strength,
+    !streamUp && streamUp === false          // stream falling (strict)
+  ];
+  return { side, passed: checks.filter(Boolean).length, checks, note: "" };
+}
+
+function percentileRanks(values){
+  const n = values.length;
+  if (n <= 1) return values.map(() => 100);
+  const order = values.map((v, i) => ({ v, i })).sort((a, b) => a.v - b.v);
+  const pct = new Array(n);
+  let i = 0;
+  while (i < n){
+    let j = i;
+    while (j + 1 < n && Math.abs(order[j+1].v - order[i].v) < 1e-12) j++;
+    const avg = (i + j) / 2;
+    const p = (avg / (n - 1)) * 100;
+    for (let k = i; k <= j; k++) pct[order[k].i] = p;
+    i = j + 1;
+  }
+  return pct;
+}
+
+/* rows: [{symbol, displayName, metrics:{trend,strong,eff,tickmom,range}, ready:{side,passed}}] */
+function rankRows(rows){
+  const keys = ["trend", "strong", "eff", "tickmom", "range"];
+  if (rows.length === 0) return rows;
+  const pcts = {};
+  for (const k of keys) pcts[k] = percentileRanks(rows.map(r => r.metrics[k]));
+  rows.forEach((r, idx) => {
+    let s = 0;
+    for (const k of keys) s += CONFIG.weights[k] * pcts[k][idx];
+    r.score = Math.round(s * 10) / 10;
+  });
+  return rows.slice().sort((a, b) => b.score - a.score);
+}
+
+function analyzeSymbol(info, candles, prices, nowSec){
+  const last = candles[candles.length - 1];
+  const isLive = !!last && (nowSec - last.epoch) < CONFIG.granularity;
+  const closedAll = isLive ? candles.slice(0, -1) : candles.slice();
+  const closed = closedAll.slice(-30);
+  const px = prices.map(Number);
+  const metrics = computeMetrics(closed, px);
+  const ready = botReadyState(candles, px, nowSec, isLive);
+  return {
+    symbol: info.symbol,
+    displayName: info.displayName || info.symbol,
+    metrics, ready, isLive,
+    closedCount: closed.length
+  };
+}
+
+/* export for unit tests (browser ignores this) */
+if (typeof module !== "undefined" && module.exports){
+  module.exports = { CONFIG, computeMetrics, botReadyState, percentileRanks, rankRows, analyzeSymbol, sign };
+}
+</script>
+
+<script id="app">
+/* ================= APP (WebSocket + UI) ================= */
+(function(){
+  const $ = id => document.getElementById(id);
+  const state = {
+    ws: null, endpointIdx: 0, scanning: false, cancelled: false,
+    reqId: 1, pending: new Map(), rows: [], skipped: [], lastUpdated: null,
+    autoTimer: null, pingTimer: null, scanToken: 0
+  };
+
+  function setStatus(txt, isErr){
+    const el = $("status");
+    el.textContent = txt;
+    el.className = "status" + (isErr ? " err" : "");
+  }
+  function setProg(frac){ $("prog").style.width = Math.round(frac * 100) + "%"; }
+  function showBanner(html){
+    const b = $("banner");
+    if (!html){ b.classList.remove("show"); b.innerHTML = ""; return; }
+    b.innerHTML = html; b.classList.add("show");
+  }
+
+  function connect(){
+    return new Promise((resolve, reject) => {
+      const urls = CONFIG_ENDPOINTS();
+      let i = state.endpointIdx % urls.length;
+      const attempt = (idx) => {
+        if (state.cancelled) return reject(new Error("cancelled"));
+        const url = urls[idx];
+        setStatus("Connecting to Deriv… (" + new URL(url).host + ")");
+        let settled = false;
+        const ws = new WebSocket(url);
+        const fail = (msg) => {
+          if (settled) return;
+          settled = true;
+          try { ws.close(); } catch(e){}
+          if (idx + 1 < urls.length) attempt(idx + 1);
+          else reject(new Error(msg));
+        };
+        const timer = setTimeout(() => fail("connection timeout to " + url), 10000);
+        ws.onopen = () => {
+          if (settled) return;
+          settled = true; clearTimeout(timer);
+          state.ws = ws; state.endpointIdx = idx;
+          clearInterval(state.pingTimer);
+          state.pingTimer = setInterval(() => { try { ws.send(JSON.stringify({ping:1})); } catch(e){} }, 25000);
+          resolve(ws);
+        };
+        ws.onerror = () => fail("could not open " + url);
+        ws.onclose = () => fail("closed " + url);
+        ws.onmessage = (ev) => {
+          let msg; try { msg = JSON.parse(ev.data); } catch(e){ return; }
+          if (msg.msg_type === "ping" || msg.msg_type === "candles" || msg.msg_type === "history" ||
+              msg.msg_type === "active_symbols" || msg.error){
+            const rid = msg.req_id;
+            if (rid != null && state.pending.has(rid)){
+              const { resolve: r, reject: j, timer: t } = state.pending.get(rid);
+              clearTimeout(t); state.pending.delete(rid);
+              if (msg.error) j(new Error(msg.error.message || msg.error.code || "API error"));
+              else r(msg);
+            }
+          }
+        };
+      };
+      attempt(i);
+    });
+  }
+
+  function CONFIG_ENDPOINTS(){
+    // allow override of app_id via ?app_id= in the URL
+    try {
+      const p = new URLSearchParams(location.search);
+      if (p.get("app_id")){
+        return window.CORE.CONFIG.endpoints.map(u => u.replace(/app_id=\d+/, "app_id=" + encodeURIComponent(p.get("app_id"))));
+      }
+    } catch(e){}
+    return window.CORE.CONFIG.endpoints;
+  }
+
+  function request(payload, timeoutMs){
+    return new Promise((resolve, reject) => {
+      if (!state.ws || state.ws.readyState !== 1) return reject(new Error("not connected"));
+      const rid = state.reqId++;
+      const timer = setTimeout(() => {
+        state.pending.delete(rid);
+        reject(new Error("timeout: " + (payload.active_symbols ? "active_symbols" : payload.ticks_history || "request")));
+      }, timeoutMs || window.CORE.CONFIG.requestTimeoutMs);
+      state.pending.set(rid, { resolve, reject, timer });
+      state.ws.send(JSON.stringify(Object.assign({}, payload, { req_id: rid })));
+    });
+  }
+
+  async function pickCandidates(){
+    const resp = await request({ active_symbols: "brief", product_type: "basic" });
+    const all = (resp.active_symbols || []);
+    let syn = all.filter(s => s.market === "synthetic_index" && s.is_trading_available !== false);
+    if ($("chkVol").checked) syn = syn.filter(s => (s.display_name || "").indexOf("Volatility") === 0);
+    syn.sort((a, b) => (a.display_name || a.symbol).localeCompare(b.display_name || b.symbol));
+    if (syn.length > window.CORE.CONFIG.maxSymbols) syn = syn.slice(0, window.CORE.CONFIG.maxSymbols);
+    return syn;
+  }
+
+  async function fetchSymbol(sym){
+    const C = window.CORE.CONFIG;
+    const [cRes, tRes] = await Promise.all([
+      request({ ticks_history: sym, style: "candles", granularity: C.granularity, count: C.candleCount, end: "latest" }),
+      request({ ticks_history: sym, style: "ticks", count: C.tickCount, end: "latest" })
+    ]);
+    const candles = (cRes.candles || []).map(c => ({
+      epoch: Number(c.epoch), open: Number(c.open), high: Number(c.high),
+      low: Number(c.low), close: Number(c.close)
+    })).filter(c => isFinite(c.epoch) && isFinite(c.close));
+    const prices = ((tRes.history || {}).prices || []).map(Number).filter(isFinite);
+    if (candles.length < 5 || prices.length < 20) throw new Error("insufficient data");
+    return { candles, prices };
+  }
+
+  async function runScan(){
+    if (state.scanning) return;
+    state.scanning = true; state.cancelled = false;
+    const token = ++state.scanToken;
+    $("btnScan").disabled = true; $("btnStop").style.display = "";
+    showBanner(""); $("skipped").style.display = "none";
+    setProg(0.02); setStatus("Connecting…");
+    state.skipped = [];
+    try {
+      await connect();
+      if (state.cancelled || token !== state.scanToken) return;
+      setStatus("Fetching market list…");
+      const candidates = await pickCandidates();
+      if (!candidates.length) throw new Error("no matching synthetic markets returned by API");
+      const total = candidates.length, rows = [];
+      let done = 0;
+      for (let i = 0; i < total; i += window.CORE.CONFIG.chunkSize){
+        if (state.cancelled || token !== state.scanToken) return;
+        const chunk = candidates.slice(i, i + window.CORE.CONFIG.chunkSize);
+        setStatus("Scanning markets " + Math.min(i + chunk.length, total) + "/" + total + "…");
+        const results = await Promise.all(chunk.map(async s => {
+          try {
+            const { candles, prices } = await fetchSymbol(s.symbol);
+            return { ok: true, row: window.CORE.analyzeSymbol(
+              { symbol: s.symbol, displayName: s.display_name || s.symbol },
+              candles, prices, Math.floor(Date.now() / 1000)) };
+          } catch (e) {
+            return { ok: false, symbol: s.symbol, name: s.display_name || s.symbol, err: e.message };
+          }
+        }));
+        for (const r of results){
+          done++;
+          if (r.ok) rows.push(r.row);
+          else state.skipped.push(r.name + " (" + r.err + ")");
+        }
+        setProg(done / (total * 2) + 0.02);
+      }
+      if (token !== state.scanToken) return;
+      const ranked = window.CORE.rankRows(rows);
+      state.rows = ranked;
+      state.lastUpdated = new Date();
+      render();
+      setStatus("Updated " + state.lastUpdated.toLocaleTimeString() + " · " + ranked.length + " markets ranked" +
+        (state.skipped.length ? " · " + state.skipped.length + " skipped" : ""));
+      setProg(1);
+      if (state.skipped.length){
+        const sk = $("skipped");
+        sk.style.display = "block";
+        sk.textContent = "Skipped: " + state.skipped.join(" · ");
+      }
+    } catch (e) {
+      if (!state.cancelled){
+        setStatus("Scan failed: " + e.message, true);
+        showBanner(
+          "<b>Could not reach Deriv's API from this page.</b><br>" +
+          "• Make sure you opened this file in your normal browser (Chrome/Edge) with internet access — the in-app preview iframe has no network.<br>" +
+          "• If your network blocks the WebSocket, serve the folder: <code>python -m http.server 8000</code> then open <code>http://localhost:8000/Best_Market_Analyzer.html</code>.<br>" +
+          "• Open your Deriv chart in another tab to confirm the market data loads there.<br>" +
+          "<i>Detail:</i> " + String(e.message || e));
+      }
+    } finally {
+      state.scanning = false;
+      $("btnScan").disabled = false;
+      $("btnStop").style.display = "none";
+    }
+  }
+
+  function fmtPct(v){ return isFinite(v) ? v.toFixed(0) + "%" : "–"; }
+
+  function badge(ready, symbol){
+    if (!ready || !ready.side) return '<span class="chip no">waiting</span>';
+    const cls = ready.passed === 4 ? "ready" : "part";
+    const label = ready.passed === 4 ? (ready.side + " · BOT-READY 4/4") : (ready.side + " · " + ready.passed + "/4");
+    const you = symbol === "R_10" ? ' <span class="chip bot">your bot</span>' : "";
+    return '<span class="chip ' + cls + '">' + label + "</span>" + you;
+  }
+
+  function render(){
+    const rows = state.rows;
+    const area = $("tableArea");
+    if (!rows.length){
+      area.innerHTML = '<div class="empty">No results — check the status line above.</div>';
+      $("hero").classList.remove("show");
+      return;
+    }
+    const best = rows[0];
+    $("hero").classList.add("show");
+    $("heroName").textContent = best.displayName;
+    $("heroSym").textContent = best.symbol +
+      (best.ready && best.ready.side ? "  ·  scanner: " + best.ready.passed + "/4 for " + best.ready.side : "  ·  scanner: waiting");
+    $("heroSet").textContent = best.displayName + " (" + best.symbol + ")";
+    const m = best.metrics;
+    $("heroWhy").textContent =
+      "Score " + best.score.toFixed(1) + "/100 — trend " + fmtPct(m.trend) +
+      ", strong candles " + fmtPct(m.strong) + ", efficiency " + fmtPct(m.eff) +
+      ", tick momentum " + fmtPct(m.tickmom) + ", avg range " + fmtPct(m.range) +
+      " over the last 30 closed 1-min candles.";
+
+    let html = "<table><thead><tr>" +
+      "<th>#</th><th>Market</th><th>Score</th><th>Trend</th><th>Strong</th><th>Efficiency</th><th>Tick mom.</th><th>Range</th><th>Bot scanner</th>" +
+      "</tr></thead><tbody>";
+    rows.forEach((r, i) => {
+      const you = r.symbol === "R_10" ? ' class="you"' : "";
+      html += "<tr" + you + ">" +
+        '<td class="rank">' + (i + 1) + "</td>" +
+        '<td><span class="mname">' + esc(r.displayName) + '</span><br><span class="msym">' + esc(r.symbol) + "</span></td>" +
+        '<td class="scorecell"><span class="scoreval">' + r.score.toFixed(1) + '</span><div class="sbar"><div style="width:' + Math.max(2, r.score) + '%"></div></div></td>' +
+        '<td class="num">' + fmtPct(r.metrics.trend) + "</td>" +
+        '<td class="num">' + fmtPct(r.metrics.strong) + "</td>" +
+        '<td class="num">' + fmtPct(r.metrics.eff) + "</td>" +
+        '<td class="num">' + fmtPct(r.metrics.tickmom) + "</td>" +
+        '<td class="num">' + fmtPct(r.metrics.range) + "</td>" +
+        "<td>" + badge(r.ready, r.symbol) + "</td>" +
+        "</tr>";
+    });
+    html += "</tbody></table>";
+    area.innerHTML = html;
+  }
+
+  function esc(s){ return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+  /* controls */
+  $("btnScan").addEventListener("click", runScan);
+  $("btnStop").addEventListener("click", () => {
+    state.cancelled = true; state.scanning = false;
+    try { if (state.ws) state.ws.close(); } catch(e){}
+    setStatus("Stopped.");
+    $("btnScan").disabled = false; $("btnStop").style.display = "none";
+  });
+  $("chkVol").addEventListener("change", () => { if (state.rows.length) runScan(); });
+  function scheduleAuto(){
+    clearInterval(state.autoTimer);
+    if ($("chkAuto").checked){
+      state.autoTimer = setInterval(() => {
+        if (!state.scanning && document.visibilityState === "visible") runScan();
+      }, 60000);
+    }
+  }
+  $("chkAuto").addEventListener("change", scheduleAuto);
+  scheduleAuto();
+
+  /* expose core globally for the app + tests */
+  window.CORE = {
+    CONFIG, computeMetrics, botReadyState, percentileRanks, rankRows, analyzeSymbol, sign
+  };
+})();
+</script>
+</body>
+</html>
