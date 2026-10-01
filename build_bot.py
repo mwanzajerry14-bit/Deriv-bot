@@ -222,6 +222,7 @@ BASE_VARS = [
     "wait",
     "cooldown",
     "msg",
+    "broke",
 ]
 
 # ---------- trade definition ----------
@@ -291,14 +292,16 @@ def init_chain(mode, VID):
                 setv("base_stake", VID["base_stake"], num(0.35)),
             ),
             setv("cap_stake", VID["cap_stake"], round2(arith("MULTIPLY", get("bal", VID["bal"]), num(0.08)))),
+            # floor 0.70 (= 2 x min stake) so one doubling step always fits, even on a $2 account
             iff(
-                compare("LT", get("cap_stake", VID["cap_stake"]), num(0.35)),
-                setv("cap_stake", VID["cap_stake"], num(0.35)),
+                compare("LT", get("cap_stake", VID["cap_stake"]), num(0.70)),
+                setv("cap_stake", VID["cap_stake"], num(0.70)),
             ),
             setv("stake", VID["stake"], get("base_stake", VID["base_stake"])),
             setv("streak", VID["streak"], num(0)),
             setv("wait", VID["wait"], num(0)),
             setv("cooldown", VID["cooldown"], num(10)),
+            setv("broke", VID["broke"], num(0)),
             setv(
                 "take_profit",
                 VID["take_profit"],
@@ -308,6 +311,11 @@ def init_chain(mode, VID):
                 "stop_loss",
                 VID["stop_loss"],
                 arith("MULTIPLY", get("bal", VID["bal"]), num(0.10)),
+            ),
+            # floor 0.70 so stop-loss can absorb at least two losses (0.35 then 0.70) on tiny accounts
+            iff(
+                compare("LT", get("stop_loss", VID["stop_loss"]), num(0.70)),
+                setv("stop_loss", VID["stop_loss"], num(0.70)),
             ),
             text_join(
                 "msg",
@@ -399,28 +407,73 @@ def parity_conditions(VID):
 
 def before_purchase_block(mode, VID):
     if mode == "rise_fall":
-        direction_if = iff(
+        body = iff(
             compare("GT", read_ohlc("close", 2), read_ohlc("open", 2)),
             iff(scan_trend(up=True), purchase_call),
             iff(scan_trend(up=False), purchase_put),
         )
-        gate = iff(compare("LTE", get("wait", VID["wait"]), num(0)), direction_if)
     else:
         even_odd_if = iff(
             get("even_side", VID["even_side"]),
             purchase_even,
             purchase_odd,
         )
-        inner = chain(
+        body = chain(
             [
                 setv("even_side", VID["even_side"], is_even(digit_back(1))),
                 iff(parity_conditions(VID), even_odd_if),
             ]
         )
-        gate = iff(compare("LTE", get("wait", VID["wait"]), num(0)), inner)
+
+    # --- small-account protection (e.g. a $2 balance) ---
+    # 1) If the balance can no longer cover the MINIMUM stake ($0.35), stop
+    #    cleanly once (notify) instead of retrying an unaffordable order forever.
+    # 2) If the balance can't cover the next escalated stake but is still
+    #    >= $0.35, shrink the stake to what's affordable — never place an
+    #    order the account can't pay for.
+    # 3) Only trade when: cooldown expired, not broke, and balance >= stake.
+    broke_guard = iff(
+        and_all([
+            compare("EQ", get("broke", VID["broke"]), num(0)),
+            compare("LT", balance(), num(0.35)),
+        ]),
+        chain(
+            [
+                setv("broke", VID["broke"], num(1)),
+                notify(
+                    "error",
+                    "severe-error",
+                    B(
+                        "text",
+                        F(
+                            "TEXT",
+                            "⛔ Balance is below the $0.35 minimum stake — bot is idle. Top up, then press Run again.",
+                        ),
+                    ),
+                ),
+            ]
+        ),
+    )
+    shrink_stake = iff(
+        and_all([
+            compare("EQ", get("broke", VID["broke"]), num(0)),
+            compare("GTE", balance(), num(0.35)),
+            compare("LT", balance(), get("stake", VID["stake"])),
+        ]),
+        setv("stake", VID["stake"], round2(balance())),
+    )
+    gate = iff(
+        and_all([
+            compare("LTE", get("wait", VID["wait"]), num(0)),
+            compare("EQ", get("broke", VID["broke"]), num(0)),
+            compare("GTE", balance(), get("stake", VID["stake"])),
+        ]),
+        body,
+    )
+    stack = chain([broke_guard, shrink_stake, gate])
     return B(
         "before_purchase",
-        S("BEFOREPURCHASE_STACK", gate),
+        S("BEFOREPURCHASE_STACK", stack),
         ' x="0" y="760"',
     )
 
@@ -445,8 +498,8 @@ def after_purchase_block(VID):
                 round2(arith("MULTIPLY", get("bal", VID["bal"]), num(0.08))),
             ),
             iff(
-                compare("LT", get("cap_stake", VID["cap_stake"]), num(0.35)),
-                setv("cap_stake", VID["cap_stake"], num(0.35)),
+                compare("LT", get("cap_stake", VID["cap_stake"]), num(0.70)),
+                setv("cap_stake", VID["cap_stake"], num(0.70)),
             ),
             setv("stake", VID["stake"], get("base_stake", VID["base_stake"])),
             setv("streak", VID["streak"], num(0)),

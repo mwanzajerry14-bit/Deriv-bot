@@ -8,7 +8,7 @@
 | `Deriv_V10_EvenOdd_Bot.xml` | **Even/Odd strategy** (parity-streak gate) — same money management, digit contracts |
 | `Best_Market_Analyzer.html` | Companion ranking tool with live badges for **both** bots (hosted: `https://mwanzajerry14-bit.github.io/Deriv-bot/`) |
 
-Built against Deriv's own open-source bot template (`deriv-com/trading-bot-template`) — every block type, field name and dropdown value in both files was verified against their official block definitions, and both pass a real Blockly parse test (Rise/Fall: 245 blocks, Even/Odd: 289 blocks, 0 warnings each).
+Built against Deriv's own open-source bot template (`deriv-com/trading-bot-template`) — every block type, field name and dropdown value in both files was verified against their official block definitions, and both pass a real Blockly parse test (Rise/Fall: 292 blocks, Even/Odd: 336 blocks, 0 warnings each).
 
 ---
 
@@ -69,13 +69,36 @@ badge mirrors these two checks live.
 ### Stake escalation (exactly as chosen)
 
 ```
-stake = 2% of balance          (rounded to 2 decimals, min $0.35)
-after each LOSS:   stake × 2   (2% → 4% → 8% → capped at 8%)
+stake = 2% of balance          (rounded to 2 decimals, floored at $0.35 = Deriv's
+                                minimum stake for synthetic options)
+after each LOSS:   stake × 2   (2% → 4% → 8% → capped at 8% of balance,
+                                with a floor of $0.70 so one doubling always fits)
 after a WIN:       stake resets to 2% of the CURRENT balance (compounds as you grow)
 ```
 
 Example on a $1,000 balance: **$20 → $40 → $80 → $80 (cap) → … → win → $20**.
 Session take-profit/stop-loss thresholds are fixed at start-up from the starting balance ($50 / $100 in this example).
+
+### Small accounts (a $2 balance) — what changes
+
+Deriv's minimum stake for synthetic options is **$0.35** (verified), which is 17.5% of a $2
+account — so plain percentages alone would break the bot (2% = $0.04 < min stake; 8% cap =
+$0.16 < one doubling; −10% stop-loss = −$0.20 < one loss). The generator therefore adds three
+protections, active on **any** balance size but only binding on tiny ones:
+
+| Protection | Rule | Effect on $2 |
+|---|---|---|
+| **Stake floor** | base stake = max(2% balance, **$0.35**) | orders are always placeable |
+| **Cap floor** | escalation cap = max(8% balance, **$0.70**) | the ×2 step works: $0.35 → $0.70, then held |
+| **Stop-loss floor** | stop = max(−10% balance, **−$0.70**) | survives **two** losses instead of dying after the first |
+| **Affordability gate** | buy only if `balance ≥ next stake`; otherwise shrink stake to the affordable amount (if still ≥ $0.35) | no order can ever exceed the account |
+| **Clean stop** | if balance < $0.35 → one ⛔ notification, then idle (no error-restart loop) | drained accounts stop gracefully |
+
+A typical $2 session: lose at $0.35 (−0.35 > −0.70, continue, stake doubles to $0.70) →
+either **win** (recovers the loss ≈ +$0.63, take-profit +$0.10 hit → session closes green) or
+**lose again** (−1.05 ≤ −0.70 → stop-loss ends it). Note the take-profit (5% = $0.10) is
+smaller than one win's profit on a $2 account, so **any single win ends the session** — raise
+the `0.05` in Initialization if you want longer runs (e.g. `0.15` ≈ three wins).
 
 ### Notifications
 

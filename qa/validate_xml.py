@@ -110,6 +110,66 @@ def validate_common(path, tree, root, blocks):
     check("MULTIPLY" in blob, "MULTIPLY missing")
     check("logic_operation" in blob and ">AND<" in blob, "AND fold missing")
 
+    # --- small-account ($2) protections ---
+    varnames0 = [(v.text or "") for v in root.iter(NS + "variable")]
+    check("broke" in varnames0, "broke guard variable missing")
+
+    def get_var(blk, value_name):
+        v = blk.find(f"{NS}value[@name='{value_name}']")
+        if v is None:
+            return None
+        return v.find(NS + "block")
+
+    # cap floor 0.70 (must exist in init AND win-recompute: >= 2 occurrences)
+    cap_floors = 0
+    stop_floors = 0
+    for b in blocks:
+        if b.get("type") != "controls_if":
+            continue
+        if0 = get_var(b, "IF0")
+        if if0 is None or if0.get("type") != "logic_compare" or field_map(if0).get("OP") != "LT":
+            continue
+        a = get_var(if0, "A"); c = get_var(if0, "B")
+        if a is None or c is None or a.get("type") != "variables_get":
+            continue
+        var = field_map(a).get("VAR")
+        numf = c.find(f".//{NS}field[@name='NUM']")
+        val = numf.text if numf is not None else None
+        do = b.find(f"{NS}statement[@name='DO0']")
+        if do is None:
+            continue
+        dt = ET.tostring(do, encoding="unicode")
+        if var == "cap_stake" and val == "0.7" and "cap_stake" in dt:
+            cap_floors += 1
+        if var == "stop_loss" and val == "0.7" and "stop_loss" in dt:
+            stop_floors += 1
+    check(cap_floors >= 2, f"cap floor 0.70 occurrences = {cap_floors}, want >= 2 (init + win)")
+    check(stop_floors >= 1, f"stop-loss floor 0.70 occurrences = {stop_floors}, want >= 1")
+
+    blob0 = ET.tostring(root, encoding="unicode")
+    check("Balance is below the $0.35 minimum stake" in blob0, "ruin notify text missing")
+
+    # affordability gate: GTE balance >= stake
+    afford = False
+    shrink = False
+    for b in blocks:
+        if b.get("type") != "logic_compare":
+            continue
+        op = field_map(b).get("OP")
+        if op == "GTE":
+            c = get_var(b, "B")
+            if c is not None and c.get("type") == "variables_get" and field_map(c).get("VAR") == "stake":
+                afford = True
+        if op == "GTE":
+            a = get_var(b, "A")
+            c = get_var(b, "B")
+            if (a is not None and a.get("type") == "balance" and c is not None
+                    and c.get("type") == "math_number"
+                    and (c.find(f".//{NS}field[@name='NUM']").text or "") in ("0.35", "0.35000000000000003")):
+                shrink = True
+    check(afford, "affordability check (balance >= stake) missing")
+    check(shrink, "shrink-to-affordable check (balance >= 0.35) missing")
+
     # wait decrement in tick_analysis
     ta = find_block_by_type(blocks, "tick_analysis")
     if ta:
