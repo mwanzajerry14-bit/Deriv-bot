@@ -7,6 +7,7 @@
 | `Deriv_V10_Streak_Scaling_Bot.xml` | **Rise/Fall strategy** (4-check trend scanner) — load via **Bot Builder → Load strategy → Local → Select an XML file**; dragging onto the workspace works too |
 | `Deriv_V10_EvenOdd_Bot.xml` | **Even/Odd strategy** (parity-streak gate) — same money management, digit contracts |
 | `Best_Market_Analyzer.html` | Companion ranking tool with live badges for **both** bots (hosted: `https://mwanzajerry14-bit.github.io/Deriv-bot/`) |
+| `Trend_Robot.html` | **Auto-trading robot** — same 4-check scanner running live in your browser; buys the first qualifying Volatility market when ARMED (demo default) |
 
 Built against Deriv's own open-source bot template (`deriv-com/trading-bot-template`) — every block type, field name and dropdown value in both files was verified against their official block definitions, and both pass a real Blockly parse test (Rise/Fall: 292 blocks, Even/Odd: 336 blocks, 0 warnings each).
 
@@ -154,6 +155,40 @@ bots' exact entry checks: **RF** (`CALL · BOT-READY 4/4` = the Rise/Fall bot wo
 market right now) and **EO** (`EO EVEN · READY 8/10` = the Even/Odd parity gate passes).
 Your current market (**R_10**) is highlighted, the hero card tells you the #1 market and
 exactly what to set in **Trade parameters → Market**. Auto-refreshes every 60s.
+
+## Trend Robot (`Trend_Robot.html`) — auto-trades the moment a trend qualifies
+
+The analyzer *tells* you when a market is BOT-READY 4/4 — the robot **acts on it**. It runs
+your bots' exact same engine in the browser: public WSS sweep over **every Volatility index**
+(default every 5 s), the identical 4-check trend gate, and the identical money rules
+(2%→4%→8% cap with the $0.35/$0.70 floors, TP +5%, SL −10%, cooldown, one trade at a time).
+
+**How to run it (demo first):**
+
+1. Open `https://mwanzajerry14-bit.github.io/Deriv-bot/Trend_Robot.html` (or the local file).
+2. **Connect & scan** — needs no token; the live table shows every market's score and RF badge.
+3. Create an API token at Deriv → *Settings → API tokens* → permissions **Read + Trade**.
+4. Paste it (account stays on **Demo** by default), press **Arm auto-trade**. The robot then
+   buys the **first** market that hits 4/4 (highest score if several qualify in one sweep) —
+   CALL or PUT per the closed-candle side — with the next stake from the same escalation.
+5. Big red **STOP** disarms instantly and never places new entries (any open contract still
+   settles normally). The journal records every signal, proposal, buy and settlement.
+
+**How authentication works** (all verified against Deriv's current API): your browser calls
+`GET https://api.derivws.com/trading/v1/options/accounts` with `Authorization: Bearer <token>`,
+picks your demo/real account, requests a one-time WebSocket URL via `POST …/accounts/{id}/otp`,
+and opens that URL for balance / proposal / buy / settlement updates. The token is stored only
+in your browser's localStorage (revoke it anytime). REST/WS errors — e.g. *Missing
+authorization header*, *Invalid token format*, expired token — are printed **verbatim** in the
+robot journal. If a token is rejected, register a free app id at `developers.deriv.com` and set
+it as **App ID**.
+
+**Safety rails:** arm is blocked without a token; default account is Demo; balance < $0.35
+auto-disarms (⛔); TP/SL close the session (🎯/🛑); one open contract at a time; unknown
+settlement after 60 s → auto-stop for manual check; proposal/buy errors (market closed,
+insufficient balance) return to scanning with a 5 s penalty instead of retry-spamming.
+
+---
 
 ## Important risk notes
 

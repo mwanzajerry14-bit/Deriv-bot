@@ -111,6 +111,7 @@
     <b>How to use:</b> open this page and press <b>Scan markets</b> — it runs entirely in your browser against Deriv’s public WebSocket API.<br>
     If the scan fails, the red panel shows a per-endpoint connection test (WebSocket vs plain HTTPS) and what to try next — usually an ad-block/VPN extension or a network-level block.<br>
     Offline/local option: download <code>Best_Market_Analyzer.html</code> from the repo, then <code>python -m http.server 8000</code> → open <code>http://localhost:8000/Best_Market_Analyzer.html</code>.<br>
+    <b>Auto-trade companion:</b> <a href="Trend_Robot.html" style="color:#2ea8ff;font-weight:700">Trend_Robot.html</a> — runs this same scanner live and buys the first 4/4 qualifier for you when armed (demo default; big red STOP; token stays in your browser).<br>
     Data: Deriv's public WebSocket API — current endpoint <code>wss://api.derivws.com/trading/v1/options/ws/public</code> (no login), legacy hosts kept as automatic fallbacks. Rankings describe <i>recent</i> market structure — they do not predict the future. Always test on demo first. Not financial advice.
   </footer>
 </div>

@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deriv Trend Robot</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --line:#2a3140;
+    --txt:#e6edf3; --muted:#8b949e; --accent:#2ea8ff; --green:#2ea043; --red:#f85149;
+    --gold:#e3b341;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.5 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:1100px;margin:0 auto;padding:24px 16px 48px}
+  h1{font-size:22px;margin:0 0 4px}
+  h1 .dot{color:var(--green)}
+  .sub{color:var(--muted);margin-bottom:18px;font-size:13px}
+  .row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:12px}
+  button{background:var(--accent);border:0;color:#04121f;font-weight:700;padding:9px 16px;border-radius:8px;cursor:pointer;font-size:13px}
+  button:disabled{opacity:.45;cursor:default}
+  button.green{background:var(--green);color:#fff}
+  button.red{background:var(--red);color:#fff}
+  button.ghost{background:transparent;border:1px solid var(--line);color:var(--txt);font-weight:600}
+  .status{flex:1;min-width:240px;color:var(--muted);font-size:13px;text-align:right}
+  .status.ok{color:#7ee787}
+  .status.err{color:var(--red)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:14px}
+  .card h3{margin:0 0 10px;font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px}
+  label.f{display:block;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px}
+  input,select{width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:8px 10px;font-size:13px}
+  input:focus,select:focus{outline:1px solid var(--accent)}
+  .hint{font-size:11px;color:var(--muted);margin-top:4px}
+  .hint a{color:var(--accent)}
+  .pill{display:inline-block;font-size:11px;font-weight:800;padding:3px 9px;border-radius:20px;letter-spacing:.05em}
+  .pill.disarmed{background:#30363d;color:var(--muted);border:1px solid var(--line)}
+  .pill.scan{background:#2ea8ff22;color:#79c0ff;border:1px solid #2ea8ff55}
+  .pill.armed{background:#e3b34122;color:var(--gold);border:1px solid #e3b34155}
+  .pill.trade{background:#2ea04333;color:#7ee787;border:1px solid #2ea04388}
+  .pill.stop{background:#f8514922;color:#ff9d94;border:1px solid #f8514955}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-top:4px}
+  .stat{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+  .stat .k{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+  .stat .v{font-size:16px;font-weight:800;font-variant-numeric:tabular-nums}
+  .stat .v.pos{color:#7ee787}
+  .stat .v.neg{color:#ff9d94}
+  table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-bottom:14px}
+  thead th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);background:var(--panel2)}
+  tbody td{padding:8px 10px;border-bottom:1px solid var(--line);font-size:13px;vertical-align:middle}
+  tbody tr:last-child td{border-bottom:0}
+  tr.qual{background:#2ea04311}
+  .chip{display:inline-block;font-size:10px;font-weight:800;padding:2px 7px;border-radius:20px;letter-spacing:.05em}
+  .chip.ready{background:#2ea04333;color:#7ee787;border:1px solid #2ea04388}
+  .chip.part{background:#e3b34122;color:#e3b341;border:1px solid #e3b34155}
+  .chip.no{background:#30363d;color:var(--muted);border:1px solid var(--line)}
+  #log{background:#0a0d12;border:1px solid var(--line);border-radius:12px;padding:10px 12px;height:260px;overflow-y:auto;font:12px/1.7 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-word}
+  .lg-t{color:#6e7681}
+  .lg-i{color:#79c0ff}
+  .lg-s{color:#7ee787}
+  .lg-w{color:var(--gold)}
+  .lg-e{color:#ff9d94}
+  .banner{background:#3d1d1f;border:1px solid #f8514955;color:#ffb3ae;border-radius:10px;padding:12px 14px;margin-bottom:14px;font-size:13px;display:none}
+  .banner.show{display:block}
+  .warnbar{background:#3d2e12;border:1px solid #e3b34155;color:#f0d68a;border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px}
+  footer{color:var(--muted);font-size:12px;margin-top:20px;line-height:1.7}
+  footer code{background:var(--panel2);padding:1px 6px;border-radius:4px}
+  .grow{flex:1}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Deriv Trend Robot <span class="dot">●</span></h1>
+  <div class="sub">Scans every Volatility index with your Rise/Fall bot's <b>exact 4-check trend scanner</b> and — when armed — purchases <b>the first market that qualifies</b>, using the bots' money rules (2% → 4% → 8% cap, TP +5% / SL −10%, floors for $2 accounts). One trade at a time. <b>Demo first.</b></div>
+
+  <div class="warnbar">⚠️ <b>This robot trades real contracts when armed.</b> Keep it on <b>Demo</b> until you've watched a full session. Your API token stays in <b>this browser only</b> (localStorage) — revoke it anytime at Deriv → Settings → API tokens.</div>
+
+  <div class="banner" id="banner"></div>
+
+  <div class="card">
+    <h3>Connection &amp; arming</h3>
+    <div class="grid">
+      <div>
+        <label class="f">Account</label>
+        <select id="selAcct">
+          <option value="demo" selected>Demo (default)</option>
+          <option value="real">Real money</option>
+        </select>
+      </div>
+      <div>
+        <label class="f">API token (read + trade)</label>
+        <input type="password" id="inpToken" placeholder="paste Deriv API token" autocomplete="off">
+        <div class="hint">Deriv → <a href="https://app.deriv.com/account/api-token" target="_blank" rel="noopener">Settings → API tokens</a> → Read + Trade. Stored locally only.</div>
+      </div>
+      <div>
+        <label class="f">App ID</label>
+        <input type="text" id="inpApp" value="1089">
+        <div class="hint">Leave 1089 unless your token belongs to a registered app.</div>
+      </div>
+      <div>
+        <label class="f">Account ID override (optional)</label>
+        <input type="text" id="inpAcctId" placeholder="auto-detect">
+      </div>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <button id="btnScan">Connect &amp; scan</button>
+      <button id="btnArm" class="green" disabled>Arm auto-trade</button>
+      <button id="btnStop" class="red" style="display:none">STOP</button>
+      <span class="pill disarmed" id="modePill">DISARMED</span>
+      <span class="status" id="status">Idle — press “Connect &amp; scan”. Scanning is public (no token needed); arming requires the token.</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Strategy settings (mirrors your XML bots)</h3>
+    <div class="grid">
+      <div><label class="f">Duration (ticks)</label><input type="number" id="inpDur" value="5" min="1" max="10"></div>
+      <div><label class="f">Cooldown after each trade (seconds ≈ 10 ticks)</label><input type="number" id="inpCd" value="20" min="0"></div>
+      <div><label class="f">Sweep every (ms)</label><input type="number" id="inpSweep" value="5000" min="2500" step="500"></div>
+      <div><label class="f">Signal gate</label><input type="text" value="4/4 trend scanner (fixed)" disabled></div>
+    </div>
+    <div class="stats" id="stats">
+      <div class="stat"><div class="k">Balance</div><div class="v" id="stBal">—</div></div>
+      <div class="stat"><div class="k">Session P/L</div><div class="v" id="stPl">—</div></div>
+      <div class="stat"><div class="k">Trades (W/L)</div><div class="v" id="stTW">—</div></div>
+      <div class="stat"><div class="k">Next stake</div><div class="v" id="stStake">—</div></div>
+      <div class="stat"><div class="k">Streak</div><div class="v" id="stStreak">—</div></div>
+      <div class="stat"><div class="k">TP / SL</div><div class="v" id="stTPSL">—</div></div>
+    </div>
+  </div>
+
+  <div id="tableArea"><table><thead><tr><th>#</th><th>Market</th><th>Score</th><th>Scanner</th><th>Status</th></tr></thead><tbody><tr><td colspan="5" style="color:#8b949e;text-align:center;padding:24px">No scan yet — press <b>Connect &amp; scan</b>.</td></tr></tbody></table></div>
+
+  <div class="card"><h3>Robot journal</h3><div id="log"></div></div>
+
+  <footer>
+    <b>How it works:</b> public WSS (<code>wss://api.derivws.com/trading/v1/options/ws/public</code>) sweeps up to 24 Volatility indices every few seconds — trend/strong/efficiency/tick-momentum metrics + the bot's exact 4-check gate. When ARMED and idle, the first qualifier (highest score if several tie in one sweep) triggers a proposal → buy on your authenticated session, with the same stake floors/caps, TP/SL and one-trade-at-a-time rule as your XML bots. Settlement is tracked live; unknown outcomes auto-disarm.<br>
+    <b>Safety:</b> STOP never leaves new entries; balance &lt; $0.35 auto-disarms; TP/SL close the session; token lives only in your browser — revoke it when finished. Not financial advice. Test on demo first.
+  </footer>
+</div>
+
+<script id="rcore">
+/* ============ ROBOT CORE (pure — unit-tested in qa/robot_core_test.js) ============ */
+const CONFIG = {
+  endpoints: [
+    "wss://api.derivws.com/trading/v1/options/ws/public",
+    "wss://ws.derivws.com/websockets/v3?app_id=1089",
+    "wss://ws.binaryws.com/websockets/v3?app_id=1089"
+  ],
+  restBase: "https://api.derivws.com",
+  granularity: 60, candleCount: 32, tickCount: 100,
+  strengthRatio: 0.3, streamWindow: 10, streamSamples: 90,
+  weights: { trend: 0.25, strong: 0.20, eff: 0.20, tickmom: 0.15, range: 0.20 },
+  maxSymbols: 24, chunkSize: 6, requestTimeoutMs: 15000,
+  minStake: 0.35, basePct: 0.02, capPct: 0.08,
+  tpPct: 0.05, slPct: 0.10, smallFloor: 0.70
+};
+
+function round2(x){ return Math.round((Number(x) + Number.EPSILON) * 100) / 100; }
+function sign(x){ return x > 0 ? 1 : (x < 0 ? -1 : 0); }
+
+function computeMetrics(closed, prices){
+  const n = closed.length;
+  const out = { trend: 50, strong: 0, eff: 0, tickmom: 50, range: 0, sample: n };
+  if (n < 2 || !prices || prices.length < 11) return out;
+  let pairs = 0, agree = 0;
+  for (let i = 1; i < n; i++){
+    const b0 = sign(closed[i-1].close - closed[i-1].open);
+    const b1 = sign(closed[i].close - closed[i].open);
+    if (b0 !== 0 && b1 !== 0){ pairs++; if (b0 === b1) agree++; }
+  }
+  if (pairs > 0) out.trend = (agree / pairs) * 100;
+  let valid = 0, strong = 0;
+  for (const c of closed){
+    const range = c.high - c.low;
+    if (range <= 0) continue;
+    valid++;
+    if (Math.abs(c.close - c.open) >= CONFIG.strengthRatio * range) strong++;
+  }
+  if (valid > 0) out.strong = (strong / valid) * 100;
+  let path = 0;
+  for (let i = 1; i < n; i++) path += Math.abs(closed[i].close - closed[i-1].close);
+  const net = Math.abs(closed[n-1].close - closed[0].close);
+  out.eff = path > 1e-12 ? Math.min(100, (net / path) * 100) : 0;
+  const N = prices.length, w = CONFIG.streamWindow;
+  if (N > w + 1){
+    const ref = sign(prices[N-1] - prices[N-1-w]);
+    if (ref === 0) out.tickmom = 50;
+    else {
+      let cnt = 0, tot = 0;
+      const samples = Math.min(CONFIG.streamSamples, N - w);
+      for (let k = 0; k < samples; k++){
+        tot++;
+        if (sign(prices[N-1-k] - prices[N-1-k-w]) === ref) cnt++;
+      }
+      out.tickmom = tot ? (cnt / tot) * 100 : 50;
+    }
+  }
+  let rs = 0, rc = 0;
+  for (const c of closed){ if (c.close > 0){ rs += (c.high - c.low) / c.close; rc++; } }
+  out.range = rc ? (rs / rc) * 100 : 0;
+  return out;
+}
+
+/* exact mirror of the XML bot's 4 trend checks */
+function botReadyState(fullCandles, prices, nowSec, isLive){
+  const empty = { side: null, passed: 0, checks: [false,false,false,false], note: "no live candle" };
+  if (!isLive || !fullCandles || fullCandles.length < 2 || !prices || prices.length < CONFIG.streamWindow + 1) return empty;
+  const live = fullCandles[fullCandles.length - 1];
+  const closed = fullCandles[fullCandles.length - 2];
+  const tick = Number(prices[prices.length - 1]);
+  const side = closed.close > closed.open ? "CALL" : closed.close < closed.open ? "PUT" : null;
+  if (!side) return { side: null, passed: 0, checks: [false,false,false,false], note: "flat close" };
+  const strength = Math.abs(closed.close - closed.open) >= CONFIG.strengthRatio * (closed.high - closed.low);
+  const streamUp = Number(prices[prices.length - 1]) > Number(prices[prices.length - 1 - CONFIG.streamWindow]);
+  const checks = side === "CALL" ? [
+    live.close > live.open, tick > closed.close, strength, streamUp
+  ] : [
+    live.close < live.open, tick < closed.close, strength, !streamUp && streamUp === false
+  ];
+  return { side, passed: checks.filter(Boolean).length, checks, note: "" };
+}
+
+function percentileRanks(values){
+  const n = values.length;
+  if (n <= 1) return values.map(() => 100);
+  const order = values.map((v, i) => ({ v, i })).sort((a, b) => a.v - b.v);
+  const pct = new Array(n);
+  let i = 0;
+  while (i < n){
+    let j = i;
+    while (j + 1 < n && Math.abs(order[j+1].v - order[i].v) < 1e-12) j++;
+    const avg = (i + j) / 2;
+    const p = (avg / (n - 1)) * 100;
+    for (let k = i; k <= j; k++) pct[order[k].i] = p;
+    i = j + 1;
+  }
+  return pct;
+}
+
+function rankRows(rows){
+  const keys = ["trend", "strong", "eff", "tickmom", "range"];
+  if (rows.length === 0) return rows;
+  const pcts = {};
+  for (const k of keys) pcts[k] = percentileRanks(rows.map(r => r.metrics[k]));
+  rows.forEach((r, idx) => {
+    let s = 0;
+    for (const k of keys) s += CONFIG.weights[k] * pcts[k][idx];
+    r.score = Math.round(s * 10) / 10;
+  });
+  return rows.slice().sort((a, b) => b.score - a.score);
+}
+
+function analyzeSymbol(info, candles, prices, nowSec){
+  const last = candles[candles.length - 1];
+  const isLive = !!last && (nowSec - last.epoch) < CONFIG.granularity;
+  const closedAll = isLive ? candles.slice(0, -1) : candles.slice();
+  const closed = closedAll.slice(-30);
+  const px = prices.map(Number);
+  return {
+    symbol: info.symbol,
+    displayName: info.displayName || info.symbol,
+    pip: typeof info.pip === "number" ? info.pip : null,
+    metrics: computeMetrics(closed, px),
+    ready: botReadyState(candles, px, nowSec, isLive),
+    isLive,
+    closedCount: closed.length
+  };
+}
+
+function normalizeActiveSymbols(list){
+  const out = [];
+  for (const s of (list || [])){
+    const symbol = s.symbol || s.underlying_symbol;
+    if (!symbol) continue;
+    const pip = (s.pip != null ? s.pip : (s.pip_size != null ? s.pip_size : null));
+    out.push({
+      symbol,
+      displayName: s.display_name || s.underlying_symbol_name || symbol,
+      market: s.market || "", submarket: s.submarket || "",
+      pip: typeof pip === "number" ? pip : null,
+      suspended: s.is_trading_available === false || s.is_trading_suspended === 1
+    });
+  }
+  return out;
+}
+
+/* ---------- money math: byte-for-byte equivalent of the XML bots ---------- */
+function moneyInit(balance){
+  const bal = round2(balance);
+  const base = Math.max(round2(bal * CONFIG.basePct), CONFIG.minStake);
+  const cap = Math.max(round2(bal * CONFIG.capPct), CONFIG.smallFloor);
+  return {
+    startBal: bal, base, cap,
+    tp: round2(bal * CONFIG.tpPct),
+    sl: Math.max(round2(bal * CONFIG.slPct), CONFIG.smallFloor),
+    stake: base, streak: 0
+  };
+}
+function moneyOnLose(m){
+  m.streak += 1;
+  m.stake = Math.min(round2(m.stake * 2), m.cap);
+  return m;
+}
+function moneyOnWin(m, liveBal){
+  m.base = Math.max(round2(liveBal * CONFIG.basePct), CONFIG.minStake);
+  m.cap = Math.max(round2(liveBal * CONFIG.capPct), CONFIG.smallFloor);
+  m.stake = m.base;
+  m.streak = 0;
+  return m;
+}
+function moneyShrink(m, liveBal){
+  if (liveBal >= CONFIG.minStake && liveBal < m.stake) m.stake = round2(liveBal);
+  return m;
+}
+function isBroke(liveBal){ return liveBal < CONFIG.minStake; }
+function tpHit(m, liveBal){ return round2(liveBal - m.startBal) >= m.tp; }
+function slHit(m, liveBal){ return round2(m.startBal - liveBal) >= m.sl; }
+function sessionPl(m, liveBal){ return round2(liveBal - m.startBal); }
+
+/* pick the trade: ONLY 4/4 qualifiers; best score wins (ties -> first in rank order) */
+function pickSignal(rows){
+  const quals = (rows || []).filter(r => r && r.ready && r.ready.passed === 4 && r.ready.side);
+  if (!quals.length) return null;
+  quals.sort((a, b) => (b.score || 0) - (a.score || 0));
+  const w = quals[0];
+  return { symbol: w.symbol, displayName: w.displayName, side: w.ready.side,
+           score: w.score, pip: w.pip, checks: w.ready.checks };
+}
+
+if (typeof module !== "undefined" && module.exports){
+  module.exports = { CONFIG, round2, sign, computeMetrics, botReadyState, percentileRanks, rankRows,
+                     analyzeSymbol, normalizeActiveSymbols, moneyInit, moneyOnLose, moneyOnWin,
+                     moneyShrink, isBroke, tpHit, slHit, sessionPl, pickSignal };
+}
+</script>
+
+<script id="rapp">
+/* ============ ROBOT APP (public scan + authenticated execution) ============ */
+(function(){
+  const $ = id => document.getElementById(id);
+  const state = {
+    mode: "disarmed",            // disarmed | scanning | armed | intrade | stopped
+    pub: null, auth: null,
+    reqId: 1, pending: new Map(),
+    sweepTimer: null, ping: null, aping: null,
+    money: null, symbols: [], rows: [],
+    inTrade: false, current: null, cooldownUntil: 0,
+    trades: 0, wins: 0, started: false,
+    cancelled: false
+  };
+
+  function log(msg, cls){
+    const el = $("log");
+    const t = new Date().toLocaleTimeString();
+    el.innerHTML += '<span class="lg-t">[' + t + ']</span> <span class="lg-' + (cls || "i") + '">' + msg + "</span>\n";
+    el.scrollTop = el.scrollHeight;
+  }
+  function setStatus(txt, cls){ const s = $("status"); s.textContent = txt; s.className = "status" + (cls ? " " + cls : ""); }
+  function banner(html){ const b = $("banner"); if (!html){ b.classList.remove("show"); b.innerHTML = ""; return; } b.innerHTML = html; b.classList.add("show"); }
+  function setMode(m){
+    state.mode = m;
+    const pill = $("modePill");
+    const map = { disarmed: ["DISARMED", "disarmed"], scanning: ["SCANNING", "scan"],
+                  armed: ["ARMED", "armed"], intrade: ["IN TRADE", "trade"], stopped: ["STOPPED", "stop"] };
+    const [txt, cls] = map[m] || map.disarmed;
+    pill.textContent = txt; pill.className = "pill " + cls;
+    $("btnArm").disabled = !(m === "scanning" || m === "armed");
+    $("btnArm").textContent = m === "armed" ? "Disarm" : "Arm auto-trade";
+    $("btnScan").style.display = (m === "disarmed" || m === "stopped") ? "" : "none";
+    $("btnStop").style.display = (m === "disarmed" || m === "stopped") ? "none" : "";
+  }
+  function stats(){
+    const m = state.money;
+    $("stBal").textContent = state.lastBal != null ? "$" + state.lastBal.toFixed(2) : "—";
+    if (m && state.lastBal != null){
+      const pl = window.CORE_R.sessionPl(m, state.lastBal);
+      const el = $("stPl");
+      el.textContent = (pl >= 0 ? "+$" : "−$") + Math.abs(pl).toFixed(2);
+      el.className = "v " + (pl >= 0 ? "pos" : "neg");
+      $("stStake").textContent = "$" + m.stake.toFixed(2);
+      $("stStreak").textContent = String(m.streak);
+      $("stTPSL").textContent = "+$" + m.tp.toFixed(2) + " / −$" + m.sl.toFixed(2);
+    } else { $("stPl").textContent = "—"; $("stStake").textContent = "—"; $("stStreak").textContent = "—"; $("stTPSL").textContent = "—"; }
+    $("stTW").textContent = state.trades + " (" + state.wins + "/" + (state.trades - state.wins) + ")";
+  }
+
+  /* ---------- public market data ---------- */
+  function pubConnect(){
+    return new Promise((resolve, reject) => {
+      const urls = window.CORE_R.CONFIG.endpoints;
+      const attempt = i => {
+        if (i >= urls.length) return reject(new Error("all endpoints failed"));
+        const url = urls[i];
+        setStatus("Connecting… (" + new URL(url).host + ")");
+        let settled = false;
+        let ws;
+        try { ws = new WebSocket(url); } catch(e){ return attempt(i + 1); }
+        const fail = () => { if (settled) return; settled = true; try { ws.close(); } catch(e){} attempt(i + 1); };
+        const timer = setTimeout(fail, 8000);
+        ws.onopen = () => { if (settled) return; settled = true; clearTimeout(timer);
+          state.pub = ws;
+          ws.onmessage = ev => routeMsg(ws, ev, null);
+          clearInterval(state.ping);
+          state.ping = setInterval(() => { try { ws.send(JSON.stringify({ping:1})); } catch(e){} }, 25000);
+          resolve(ws); };
+        ws.onerror = fail; ws.onclose = fail;
+      };
+      attempt(0);
+    });
+  }
+  function wsSend(ws, payload, timeoutMs){
+    return new Promise((resolve, reject) => {
+      if (!ws || ws.readyState !== 1) return reject(new Error("socket not open"));
+      const rid = state.reqId++;
+      const timer = setTimeout(() => { state.pending.delete(rid); reject(new Error("timeout: " + JSON.stringify(payload).slice(0, 80))); }, timeoutMs || window.CORE_R.CONFIG.requestTimeoutMs);
+      state.pending.set(rid, { resolve, reject, timer });
+      ws.send(JSON.stringify(Object.assign({}, payload, { req_id: rid })));
+    });
+  }
+  function routeMsg(ws, ev, onAuthMsg){
+    let msg; try { msg = JSON.parse(ev.data); } catch(e){ return; }
+    const rid = msg.req_id;
+    if (rid != null && state.pending.has(rid)){
+      const { resolve, reject, timer } = state.pending.get(rid);
+      clearTimeout(timer); state.pending.delete(rid);
+      if (msg.error) reject(new Error((msg.error.message || msg.error.code) + (msg.error.details ? " — " + JSON.stringify(msg.error.details) : "")));
+      else resolve(msg);
+      return;
+    }
+    if (ws === state.auth && onAuthMsg) onAuthMsg(msg);
+  }
+
+  async function loadSymbols(){
+    const resp = await wsSend(state.pub, { active_symbols: "brief" });
+    let syn = window.CORE_R.normalizeActiveSymbols(resp.active_symbols)
+      .filter(s => !s.suspended);
+    syn = syn.filter(s => s.displayName.indexOf("Volatility") === 0);
+    syn.sort((a, b) => a.displayName.localeCompare(b.displayName));
+    state.symbols = syn.slice(0, window.CORE_R.CONFIG.maxSymbols);
+    log("Watching " + state.symbols.length + " Volatility indices", "i");
+  }
+
+  async function fetchSym(s){
+    const C = window.CORE_R.CONFIG;
+    const [cRes, tRes] = await Promise.all([
+      wsSend(state.pub, { ticks_history: s.symbol, style: "candles", granularity: C.granularity, count: C.candleCount, end: "latest" }),
+      wsSend(state.pub, { ticks_history: s.symbol, style: "ticks", count: C.tickCount, end: "latest" })
+    ]);
+    const candles = (cRes.candles || []).map(c => ({ epoch: Number(c.epoch), open: Number(c.open), high: Number(c.high), low: Number(c.low), close: Number(c.close) }))
+      .filter(c => isFinite(c.epoch) && isFinite(c.close));
+    const prices = ((tRes.history || {}).prices || []).map(Number).filter(isFinite);
+    if (candles.length < 5 || prices.length < 20) throw new Error("insufficient data");
+    return { candles, prices };
+  }
+
+  function renderRows(){
+    const rows = state.rows;
+    let html = "<table><thead><tr><th>#</th><th>Market</th><th>Score</th><th>Scanner</th><th>Status</th></tr></thead><tbody>";
+    if (!rows.length){
+      html += '<tr><td colspan="5" style="color:#8b949e;text-align:center;padding:20px">Scanning…</td></tr>';
+    }
+    rows.forEach((r, i) => {
+      const q = r.ready && r.ready.passed === 4;
+      const busy = state.inTrade && state.current && state.current.symbol === r.symbol;
+      const inCd = Date.now() < state.cooldownUntil;
+      let st = "watch";
+      if (busy) st = "IN TRADE";
+      else if (q && state.mode === "armed" && !state.inTrade && !inCd) st = "✓ would buy";
+      else if (q) st = state.mode === "armed" ? (inCd ? "cooldown" : "qualifies") : "qualifies (disarmed)";
+      html += "<tr" + (q ? ' class="qual"' : "") + "><td>" + (i + 1) + "</td>" +
+        "<td><b>" + esc(r.displayName) + "</b><br><span style='color:#8b949e;font-size:11px'>" + esc(r.symbol) + "</span></td>" +
+        "<td>" + (r.score != null ? r.score.toFixed(1) : "–") + "</td>" +
+        "<td>" + (r.ready && r.ready.side
+            ? '<span class="chip ' + (q ? "ready" : "part") + '">' + r.ready.side + " " + r.ready.passed + "/4</span>"
+            : '<span class="chip no">–</span>') + "</td>" +
+        "<td>" + st + "</td></tr>";
+    });
+    html += "</tbody></table>";
+    $("tableArea").innerHTML = html;
+  }
+  function esc(s){ return String(s).replace(/[&<>\"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c])); }
+
+  async function sweep(){
+    if (state.sweeping) return;
+    state.sweeping = true;
+    try {
+      if (!state.pub || state.pub.readyState !== 1) throw new Error("socket not open");
+      const total = state.symbols.length, rows = [];
+      for (let i = 0; i < total; i += window.CORE_R.CONFIG.chunkSize){
+        const chunk = state.symbols.slice(i, i + window.CORE_R.CONFIG.chunkSize);
+        const res = await Promise.all(chunk.map(async s => {
+          try { const { candles, prices } = await fetchSym(s);
+            return window.CORE_R.analyzeSymbol({ symbol: s.symbol, displayName: s.displayName, pip: s.pip },
+              candles, prices, Math.floor(Date.now() / 1000)); }
+          catch (e){ return null; }
+        }));
+        res.forEach(r => { if (r) rows.push(r); });
+      }
+      state.rows = window.CORE_R.rankRows(rows);
+      renderRows();
+      setStatus("Scanning… " + state.rows.length + " markets · updated " + new Date().toLocaleTimeString(), "ok");
+      await maybeTrade();
+    } catch (e){
+      log("Sweep error: " + e.message, "e");
+      if (/socket not open|timeout/i.test(e.message)) { tryReconnect(); }
+    } finally {
+      state.sweeping = false;
+    }
+  }
+  async function tryReconnect(){
+    log("Public socket lost — reconnecting…", "w");
+    try { await pubConnect(); await loadSymbols(); }
+    catch(e){ log("Reconnect failed: " + e.message, "e"); }
+  }
+
+  /* ---------- authenticated session ---------- */
+  async function jreq(path, method, token, appId, body){
+    const headers = { "Authorization": "Bearer " + token, "Deriv-App-ID": appId };
+    if (body) headers["Content-Type"] = "application/json";
+    const resp = await fetch(window.CORE_R.CONFIG.restBase + path, {
+      method, headers, body: body ? JSON.stringify(body) : undefined
+    });
+    const text = await resp.text();
+    let json = null; try { json = JSON.parse(text); } catch(e){}
+    if (!resp.ok) throw new Error("HTTP " + resp.status + ": " + (json ? JSON.stringify(json).slice(0, 200) : text.slice(0, 200)));
+    return json || {};
+  }
+  function deepFind(obj, key){
+    if (obj && typeof obj === "object"){
+      if (Object.prototype.hasOwnProperty.call(obj, key)) return obj[key];
+      for (const k of Object.keys(obj)){
+        const got = deepFind(obj[k], key);
+        if (got !== undefined) return got;
+      }
+    }
+    return undefined;
+  }
+  /* balance payloads nest: {balance:{balance:12.34,...}} — must not Number() the object */
+  function numBalance(msg){
+    let v = deepFind(msg, "balance");
+    if (v && typeof v === "object") v = v.balance;
+    const n = Number(v);
+    return isFinite(n) ? round2(n) : null;
+  }
+
+  async function authConnect(){
+    const token = ($("inpToken").value || "").trim();
+    const appId = ($("inpApp").value || "1089").trim();
+    const acctType = $("selAcct").value;
+    if (!token) throw new Error("No API token — create one (Read + Trade) and paste it first.");
+    localStorage.setItem("dr_robot_token", token);
+    localStorage.setItem("dr_robot_app", appId);
+    localStorage.setItem("dr_robot_acct", acctType);
+    setStatus("Authenticating (" + acctType + ")…");
+    const accs = await jreq("/trading/v1/options/accounts", "GET", token, appId);
+    let list = deepFind(accs, "accounts");
+    if (!Array.isArray(list)) list = [];
+    let acct = ($("inpAcctId").value || "").trim();
+    let match = null;
+    if (!acct){
+      match = list.find(a => acctType === "demo"
+        ? String(deepFind(a, "account_type") || deepFind(a, "type") || "").toLowerCase().includes("demo")
+        : !String(deepFind(a, "account_type") || deepFind(a, "type") || "").toLowerCase().includes("demo"));
+      acct = String((match && (deepFind(match, "id") || deepFind(match, "account_id") || deepFind(match, "loginid"))) || "");
+      if (!acct && list.length === 1) acct = String(deepFind(list[0], "id") || deepFind(list[0], "account_id") || deepFind(list[0], "loginid") || "");
+      if (!acct && list.length){
+        acct = String(deepFind(list[0], "id") || deepFind(list[0], "account_id") || "");
+        log("Account auto-pick fell back to first of " + list.length + " — verify it is your " + acctType + " account.", "w");
+      }
+    }
+    if (!acct) throw new Error("Could not find an account id in the accounts response. Set 'Account ID override' manually. Raw: " + JSON.stringify(accs).slice(0, 180));
+    const otp = await jreq("/trading/v1/options/accounts/" + acct + "/otp", "POST", token, appId, {});
+    state.currency = (match && deepFind(match, "currency")) || "USD";
+    const wsUrl = deepFind(otp, "url");
+    if (!wsUrl) throw new Error("No WebSocket url in OTP response: " + JSON.stringify(otp).slice(0, 180));
+    log("OTP ok — opening authenticated session (" + acctType + ", account " + acct + ")", "s");
+    const ws = await new Promise((resolve, reject) => {
+      const w = new WebSocket(wsUrl);
+      const t = setTimeout(() => reject(new Error("auth WebSocket timeout")), 12000);
+      w.onopen = () => { clearTimeout(t); resolve(w); };
+      w.onerror = () => { clearTimeout(t); reject(new Error("auth WebSocket failed (check token/App ID)")); };
+    });
+    state.auth = ws;
+    ws.onmessage = ev => routeMsg(ws, ev, onAuthMsg);
+    clearInterval(state.aping);
+    state.aping = setInterval(() => { try { ws.send(JSON.stringify({ping:1})); } catch(e){} }, 25000);
+    // balance subscription
+    try {
+      const b = await wsSend(state.auth, { balance: 1, subscribe: 1 }, 10000);
+      state.lastBal = numBalance(b);
+      if (state.lastBal != null) log("Balance: $" + state.lastBal.toFixed(2), "s");
+    } catch(e){
+      log("Balance subscribe failed (" + e.message + ") — retrying plain", "w");
+      try { const b2 = await wsSend(state.auth, { balance: 1 }, 10000); state.lastBal = numBalance(b2); } catch(e2){}
+    }
+    if (!state.lastBal || state.lastBal <= 0){
+      throw new Error("Could not read account balance — check token, account type and App ID.");
+    }
+    state.money = window.CORE_R.moneyInit(state.lastBal);
+    state.trades = 0; state.wins = 0;
+    stats();
+  }
+
+  function onAuthMsg(msg){
+    if (msg.msg_type === "balance"){
+      const b = numBalance(msg);
+      if (b != null){
+        state.lastBal = b;
+        stats();
+      }
+      return;
+    }
+    if (msg.msg_type === "proposal_open_contract"){
+      const poc = msg.proposal_open_contract || msg;
+      handlePoc(poc);
+      return;
+    }
+    if (msg.msg_type === "tick" || msg.msg_type === "ping") return;
+    // surface unexpected auth-socket errors
+    if (msg.error && msg.req_id == null) log("Auth socket: " + JSON.stringify(msg.error).slice(0, 160), "w");
+  }
+
+  /* ---------- trading state machine ---------- */
+  async function maybeTrade(){
+    if (state.mode !== "armed" || state.inTrade || !state.auth || state.auth.readyState !== 1) return;
+    if (Date.now() < state.cooldownUntil) return;
+    if (isBroke(state.lastBal || 0)){
+      log("⛔ Balance below $0.35 — disarming.", "e"); setMode("scanning"); banner("<b>Balance too low for the minimum stake — auto-trade disarmed.</b> Top up and arm again."); return;
+    }
+    const sig = window.CORE_R.pickSignal(state.rows);
+    if (!sig) return;
+    // TP/SL gate BEFORE entry
+    if (window.CORE_R.tpHit(state.money, state.lastBal)){ log("🎯 Take-profit already hit — disarming.", "s"); setMode("scanning"); return; }
+    if (window.CORE_R.slHit(state.money, state.lastBal)){ log("🛑 Stop-loss already hit — disarming.", "e"); setMode("scanning"); return; }
+    window.CORE_R.moneyShrink(state.money, state.lastBal);
+    const stake = state.money.stake;
+    log("📈 SIGNAL: " + sig.displayName + " (" + sig.symbol + ") " + sig.side + " 4/4 · score " + sig.score + " → buying $" + stake.toFixed(2) + " (5t)", "s");
+    state.inTrade = true; state.current = { sig, stake, phase: "proposing" };
+    setMode("intrade");
+    try { await proposeAndBuy(sig, stake); }
+    catch (e){
+      log("Trade failed: " + e.message, "e");
+      state.inTrade = false; state.current = null;
+      if (state.mode === "intrade") setMode("armed");   // stay stopped if user hit STOP mid-buy
+      state.cooldownUntil = Date.now() + 5000;
+    }
+  }
+
+  async function proposeAndBuy(sig, stake){
+    const p = await wsSend(state.auth, {
+      proposal: 1,
+      amount: stake.toFixed(2),
+      basis: "stake",
+      contract_type: sig.side,
+      currency: state.currency || "USD",
+      duration: Number($("inpDur").value) || 5,
+      duration_unit: "t",
+      symbol: sig.symbol
+    }, 12000);
+    const prop = deepFind(p, "proposal") || p;
+    const price = prop.price != null ? prop.price : prop.ask_price;
+    if (price == null) throw new Error("no price in proposal: " + JSON.stringify(p).slice(0, 160));
+    log("Proposal ok — price " + price + (prop.payout ? " · payout " + prop.payout : ""), "i");
+    const b = await wsSend(state.auth, { buy: price }, 12000);
+    const buy = deepFind(b, "buy") || b;
+    const cid = buy.contract_id != null ? buy.contract_id : buy.id;
+    if (cid == null) throw new Error("no contract id in buy: " + JSON.stringify(b).slice(0, 160));
+    state.current.contractId = cid;
+    state.current.phase = "open";
+    log("✅ OPEN #" + cid + " · " + sig.side + " " + sig.symbol + " $" + Number(buy.buy_price != null ? buy.buy_price : stake).toFixed(2) +
+        (buy.payout ? " · pays $" + Number(buy.payout).toFixed(2) : ""), "s");
+    // subscribe settlement updates
+    try {
+      await wsSend(state.auth, { proposal_open_contract: 1, contract_id: cid, subscribe: 1 }, 10000);
+    } catch(e){
+      log("Contract subscription: " + e.message + " — will poll once", "w");
+      try { const once = await wsSend(state.auth, { proposal_open_contract: 1, contract_id: cid }, 10000); handlePoc(once.proposal_open_contract || once); } catch(e2){}
+    }
+    // safety net: if nothing settles in 60s, poll once, then disarm on still-unknown
+    clearTimeout(state.settleTimer);
+    state.settleTimer = setTimeout(async () => {
+      if (state.inTrade && state.current){
+        try {
+          const r = await wsSend(state.auth, { proposal_open_contract: 1, contract_id: state.current.contractId }, 10000);
+          handlePoc(r.proposal_open_contract || r);
+        } catch(e){}
+        if (state.inTrade){
+          log("⚠️ Settlement unknown after timeout — STOPPING auto-trade for safety. Check the contract in your Deriv dashboard.", "e");
+          failSafeStop();
+        }
+      }
+    }, 60000);
+  }
+
+  let settleSeen = false;
+  function handlePoc(poc){
+    if (!state.inTrade || !state.current || !poc) return;
+    const sold = poc.is_sold === true || poc.is_sold === 1 || poc.status === "sold" || poc.status === "won" || poc.status === "lost" || poc.is_sold === "1";
+    if (!sold) return;
+    clearTimeout(state.settleTimer);
+    if (settleSeen) return; settleSeen = true;
+    setTimeout(() => { settleSeen = false; }, 1000);
+    const profit = Number(poc.profit != null ? poc.profit : (poc.status === "won" ? 1 : -1) * (poc.payout || 0));
+    const won = poc.status === "won" || (!poc.status && profit > 0) || (profit > 0 && poc.status !== "lost");
+    settleTrade(won, profit);
+  }
+
+  function settleTrade(won, profit){
+    const cur = state.current;
+    state.trades++;
+    if (won){ state.wins++; window.CORE_R.moneyOnWin(state.money, state.lastBal || 0); }
+    else window.CORE_R.moneyOnLose(state.money);
+    log((won ? "🏆 WON" : "💸 LOST") + " #" + (cur.contractId || "?") + " · " + (profit >= 0 ? "+" : "−") + "$" + Math.abs(profit).toFixed(2) +
+        " · streak " + state.money.streak + " · next stake $" + state.money.stake.toFixed(2), won ? "s" : "w");
+    state.inTrade = false; state.current = null;
+    state.cooldownUntil = Date.now() + (Number($("inpCd").value) || 0) * 1000;
+    if (state.lastBal == null || state.lastBal <= 0) { /* keep old */ }
+    // TP / SL
+    if (state.lastBal != null && window.CORE_R.tpHit(state.money, state.lastBal)){
+      log("🎯 Take-profit hit — session closed. Disarming.", "s");
+      setMode("scanning"); banner("<b>🎯 Take-profit reached — auto-trade disarmed.</b> Press Arm to start a new session.");
+    } else if (state.lastBal != null && window.CORE_R.slHit(state.money, state.lastBal)){
+      log("🛑 Stop-loss hit — session closed. Disarming.", "e");
+      setMode("scanning"); banner("<b>🛑 Stop-loss reached — auto-trade disarmed.</b> Press Arm to start a new session.");
+    } else if (isBroke(state.lastBal || 0)){
+      log("⛔ Balance below $0.35 — disarming.", "e"); setMode("scanning");
+      banner("<b>⛔ Balance too low for the minimum stake — auto-trade disarmed.</b>");
+    } else {
+      setMode("armed");
+    }
+    stats();
+  }
+
+  function failSafeStop(){
+    state.inTrade = false; state.current = null;
+    setMode("scanning");
+    banner("<b>Auto-trade stopped after an unknown settlement.</b> Verify your last contract in Deriv, then Arm again if all is well.");
+  }
+
+  /* ---------- controls ---------- */
+  $("btnScan").addEventListener("click", async () => {
+    banner(""); $("log").innerHTML = "";
+    try {
+      state.started = false;
+      await pubConnect();
+      await loadSymbols();
+      state.started = true;
+      setMode("scanning");
+      log("Public scan running — arming needs a token.", "i");
+      setStatus("Scanning (disarmed) — paste a token and press Arm to auto-trade.", "ok");
+      clearInterval(state.sweepTimer);
+      await sweep();
+      state.sweepTimer = setInterval(() => { if (!document.hidden) sweep(); }, Math.max(2500, Number($("inpSweep").value) || 5000));
+    } catch (e){
+      log("Connect failed: " + e.message, "e");
+      banner("<b>Could not start scanning.</b><br>" + esc(e.message) +
+        "<br>Check your connection; the analyzer page's diagnostics can pinpoint endpoint blocks.");
+      setStatus("Failed: " + e.message, "err");
+    }
+  });
+
+  $("btnArm").addEventListener("click", async () => {
+    if (state.mode === "armed"){
+      setMode("scanning"); log("Disarmed — no new entries.", "w"); return;
+    }
+    try {
+      $("btnArm").disabled = true;
+      await authConnect();
+      if (window.CORE_R.tpHit(state.money, state.lastBal) || window.CORE_R.slHit(state.money, state.lastBal)){
+        throw new Error("Session limits already met on current balance vs start — restart to recalibrate.");
+      }
+      setMode("armed");
+      banner("");
+      log("🤖 ARMED — will buy the first 4/4 qualifier.", "s");
+      setStatus("ARMED — trading " + $("selAcct").value + " on first qualifying trend.", "ok");
+      await maybeTrade();
+    } catch (e){
+      log("Arm failed: " + e.message, "e");
+      banner("<b>Could not arm.</b> " + esc(e.message) +
+        "<br>• Token needs <b>Read + Trade</b> permissions and must be unexpired.<br>" +
+        "• If it keeps failing, create a free app id at <code>developers.deriv.com</code> and use it as App ID.");
+      setMode(state.auth ? "scanning" : "disarmed");
+    } finally { $("btnArm").disabled = false; }
+  });
+
+  $("btnStop").addEventListener("click", () => {
+    const hadOpen = state.inTrade;
+    clearInterval(state.sweepTimer); clearInterval(state.ping); clearInterval(state.aping);
+    clearTimeout(state.settleTimer);
+    try { if (state.pub) state.pub.close(); } catch(e){}
+    try { if (state.auth) state.auth.close(); } catch(e){}
+    state.inTrade = false; state.current = null; state.auth = null;
+    setMode("stopped");
+    banner("<b>STOPPED.</b> No new entries will be made" + (hadOpen ? " — note: any open contract still settles on its own." : "."));
+    log("STOPPED by user.", "e");
+    setStatus("Stopped.", "err");
+  });
+
+  // restore settings
+  try {
+    $("inpToken").value = localStorage.getItem("dr_robot_token") || "";
+    $("inpApp").value = localStorage.getItem("dr_robot_app") || "1089";
+    $("selAcct").value = localStorage.getItem("dr_robot_acct") || "demo";
+  } catch(e){}
+  setMode("disarmed"); stats();
+
+  window.CORE_R_PUBLIC = true;
+})();
+</script>
+</body>
+</html>

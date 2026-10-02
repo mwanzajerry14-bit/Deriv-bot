@@ -4,3 +4,6 @@ refs/
 qa/node_modules/
 qa/_core_extract.js
 __pycache__/
+.gh_token
+.git-credentials
+qa/_rcore_extract.js
