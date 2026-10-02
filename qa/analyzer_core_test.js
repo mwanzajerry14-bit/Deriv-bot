@@ -211,5 +211,62 @@ function flat() {
     p8.ready && p8.side === "Even" && p8.agree === 10, JSON.stringify(p8));
 }
 
+// ---------- 10. new Deriv endpoint & dual active_symbols schemas ----------
+{
+  check("endpoint[0] is the current public WSS",
+    core.CONFIG.endpoints[0].indexOf("api.derivws.com/trading/v1/options/ws/public") >= 0,
+    core.CONFIG.endpoints[0]);
+  check("legacy endpoints kept as fallbacks", core.CONFIG.endpoints.length >= 3,
+    core.CONFIG.endpoints.length);
+
+  const cur = core.normalizeActiveSymbols([
+    { underlying_symbol: "R_10", underlying_symbol_name: "Volatility 10 Index",
+      market: "synthetic_index", submarket: "random_index", pip_size: 0.001,
+      exchange_is_open: 1, is_trading_suspended: 0 }
+  ]);
+  check("current schema: symbol+name+pip mapped",
+    cur[0].symbol === "R_10" && cur[0].displayName === "Volatility 10 Index" &&
+    cur[0].pip === 0.001 && cur[0].suspended === false, JSON.stringify(cur[0]));
+
+  const legacy = core.normalizeActiveSymbols([
+    { symbol: "R_10", display_name: "Volatility 10 Index", market: "synthetic_index",
+      pip: 0.001, is_trading_available: true }
+  ]);
+  check("legacy schema still works",
+    legacy[0].symbol === "R_10" && legacy[0].displayName === "Volatility 10 Index" &&
+    legacy[0].pip === 0.001 && legacy[0].suspended === false, JSON.stringify(legacy[0]));
+
+  const suspended = core.normalizeActiveSymbols([
+    { underlying_symbol: "X", underlying_symbol_name: "X", is_trading_suspended: 1 }
+  ]);
+  check("suspended flagged", suspended[0].suspended === true, JSON.stringify(suspended[0]));
+
+  check("pipDecimals(0.001)=3", core.pipDecimals(0.001) === 3, core.pipDecimals(0.001));
+  check("pipDecimals(0.01)=2", core.pipDecimals(0.01) === 2, core.pipDecimals(0.01));
+  check("pipDecimals(null)=null", core.pipDecimals(null) === null, core.pipDecimals(null));
+
+  // pip-aware digit: NUMBER 6012.3 with pip 0.01 must read digit 0 (toFixed keeps the zero),
+  // not 3 — mirrors the bot's getLastDigitForList(tick, pip)
+  const tzp = [100.2, 100.4, 100.6, 100.8, 100.2, 100.4, 100.6, 100.8, 100.2, 100.4, 6012.3];
+  const pp = core.parityState(tzp, 0.01);
+  check("pip-aware parity: 6012.3@0.01 -> digit 0 -> Even",
+    pp.side === "Even" && pp.ready, JSON.stringify(pp));
+
+  // same stream WITHOUT pip: falls back to String() digit (6) — still even here,
+  // but document that pip path differs: use odd-before-zero case
+  const tricky = [100.2, 100.4, 100.6, 100.8, 100.2, 100.4, 100.6, 100.8, 100.2, 100.4, 6012.1];
+  const noPip = core.parityState(tricky, null);
+  const withPip = core.parityState(tricky, 0.01);
+  check("without pip: 6012.1 -> digit 1 -> Odd", noPip.side === "Odd", JSON.stringify(noPip));
+  check("with pip 0.01: 6012.10 -> digit 0 -> Even", withPip.side === "Even", JSON.stringify(withPip));
+
+  // analyzeSymbol passes pip through
+  const up = strongUp();
+  const row = core.analyzeSymbol({ symbol: "R_10", displayName: "R_10", pip: 0.01 },
+    up.candles, up.prices, NOW, up.prices);
+  check("analyze: pip flows into parity", row.parity && typeof row.parity.ready === "boolean",
+    JSON.stringify(row.parity));
+}
+
 console.log(failures === 0 ? "\nALL ANALYZER CORE TESTS PASSED ✓" : `\n${failures} FAILURES ✗`);
 process.exit(failures === 0 ? 0 : 1);

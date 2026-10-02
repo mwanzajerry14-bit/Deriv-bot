@@ -111,7 +111,7 @@
     <b>How to use:</b> open this page and press <b>Scan markets</b> — it runs entirely in your browser against Deriv’s public WebSocket API.<br>
     If the scan fails, the red panel shows a per-endpoint connection test (WebSocket vs plain HTTPS) and what to try next — usually an ad-block/VPN extension or a network-level block.<br>
     Offline/local option: download <code>Best_Market_Analyzer.html</code> from the repo, then <code>python -m http.server 8000</code> → open <code>http://localhost:8000/Best_Market_Analyzer.html</code>.<br>
-    Data: Deriv public WebSocket API (<code>app_id 1089</code>, no login). Rankings describe <i>recent</i> market structure — they do not predict the future. Always test on demo first. Not financial advice.
+    Data: Deriv's public WebSocket API — current endpoint <code>wss://api.derivws.com/trading/v1/options/ws/public</code> (no login), legacy hosts kept as automatic fallbacks. Rankings describe <i>recent</i> market structure — they do not predict the future. Always test on demo first. Not financial advice.
   </footer>
 </div>
 
@@ -119,6 +119,9 @@
 /* ================= CORE (pure, DOM-free — unit-tested in qa/) ================= */
 const CONFIG = {
   endpoints: [
+    // Current Deriv public market-data endpoint (no login / no app_id).
+    // Legacy ws.derivws.com + ws.binaryws.com now answer 520 (retired) — kept as fallbacks.
+    "wss://api.derivws.com/trading/v1/options/ws/public",
     "wss://ws.derivws.com/websockets/v3?app_id=1089",
     "wss://ws.binaryws.com/websockets/v3?app_id=1089"
   ],
@@ -230,25 +233,64 @@ function botReadyState(fullCandles, prices, nowSec, isLive){
    Prices may be strings (Deriv sends display-precision strings — keep them
    so trailing zeros like "6012.30" give digit 0, exactly like the bot's
    pip-formatted getLastDigitList). */
+/* normalize active_symbols entries across API generations:
+   legacy  {symbol, display_name, is_trading_available, pip}
+   current {underlying_symbol, underlying_symbol_name, is_trading_suspended, pip_size} */
+function normalizeActiveSymbols(list){
+  const out = [];
+  for (const s of (list || [])){
+    const symbol = s.symbol || s.underlying_symbol;
+    if (!symbol) continue;
+    const pip = (s.pip != null ? s.pip : (s.pip_size != null ? s.pip_size : null));
+    out.push({
+      symbol,
+      displayName: s.display_name || s.underlying_symbol_name || symbol,
+      market: s.market || "",
+      submarket: s.submarket || "",
+      pip: typeof pip === "number" ? pip : null,
+      suspended: s.is_trading_available === false || s.is_trading_suspended === 1
+    });
+  }
+  return out;
+}
+
+/* decimal places for a pip size (0.001 -> 3) */
+function pipDecimals(pip){
+  if (!(pip > 0)) return null;
+  const d = Math.round(-Math.log10(pip));
+  return d >= 0 && d <= 10 ? d : null;
+}
+
 function lastDigitOf(p){
   const s = String(p);
   if (!s.length) return NaN;
   const c = s.charCodeAt(s.length - 1);
   return (c >= 48 && c <= 57) ? (c - 48) : NaN;
 }
-function parityState(prices){
+function parityState(prices, pip){
   const out = { side: null, anchorOK: false, agree: 0, ready: false, note: "" };
   if (!prices || prices.length < CONFIG.parityAnchor){ out.note = "need 11+ ticks"; return out; }
-  const d1 = lastDigitOf(prices[prices.length - 1]);
+  const dec = pipDecimals(pip);   // pip-aware digit (mirrors the bot's toFixed(pip) digits)
+  const digit = p => {
+    if (dec != null){
+      const n = Number(p);
+      if (!isFinite(n)) return NaN;
+      const s = n.toFixed(dec);
+      const c = s.charCodeAt(s.length - 1);
+      return (c >= 48 && c <= 57) ? (c - 48) : NaN;
+    }
+    return lastDigitOf(p);
+  };
+  const d1 = digit(prices[prices.length - 1]);
   if (isNaN(d1)){ out.note = "no digit"; return out; }
   const p1 = (d1 % 2 === 0);
-  const dA = lastDigitOf(prices[prices.length - CONFIG.parityAnchor]);
+  const dA = digit(prices[prices.length - CONFIG.parityAnchor]);
   if (isNaN(dA)){ out.note = "no digit"; return out; }
   out.side = p1 ? "Even" : "Odd";
   out.anchorOK = ((dA % 2 === 0) === p1);
   let agree = 0;
   for (let i = 0; i < CONFIG.parityWindow; i++){
-    const d = lastDigitOf(prices[prices.length - 1 - i]);
+    const d = digit(prices[prices.length - 1 - i]);
     if (!isNaN(d) && ((d % 2 === 0) === p1)) agree++;
   }
   out.agree = agree;
@@ -295,7 +337,7 @@ function analyzeSymbol(info, candles, prices, nowSec, rawPrices){
   const px = prices.map(Number);
   const metrics = computeMetrics(closed, px);
   const ready = botReadyState(candles, px, nowSec, isLive);
-  const parity = parityState(rawPrices && rawPrices.length ? rawPrices : prices);
+  const parity = parityState(rawPrices && rawPrices.length ? rawPrices : prices, info.pip);
   return {
     symbol: info.symbol,
     displayName: info.displayName || info.symbol,
@@ -306,7 +348,7 @@ function analyzeSymbol(info, candles, prices, nowSec, rawPrices){
 
 /* export for unit tests (browser ignores this) */
 if (typeof module !== "undefined" && module.exports){
-  module.exports = { CONFIG, computeMetrics, botReadyState, parityState, lastDigitOf, percentileRanks, rankRows, analyzeSymbol, sign };
+  module.exports = { CONFIG, computeMetrics, botReadyState, parityState, lastDigitOf, normalizeActiveSymbols, pipDecimals, percentileRanks, rankRows, analyzeSymbol, sign };
 }
 </script>
 
@@ -408,11 +450,11 @@ if (typeof module !== "undefined" && module.exports){
   }
 
   async function pickCandidates(){
-    const resp = await request({ active_symbols: "brief", product_type: "basic" });
-    const all = (resp.active_symbols || []);
-    let syn = all.filter(s => s.market === "synthetic_index" && s.is_trading_available !== false);
-    if ($("chkVol").checked) syn = syn.filter(s => (s.display_name || "").indexOf("Volatility") === 0);
-    syn.sort((a, b) => (a.display_name || a.symbol).localeCompare(b.display_name || b.symbol));
+    const resp = await request({ active_symbols: "brief" });
+    let syn = window.CORE.normalizeActiveSymbols(resp.active_symbols)
+      .filter(s => s.market === "synthetic_index" && !s.suspended);
+    if ($("chkVol").checked) syn = syn.filter(s => s.displayName.indexOf("Volatility") === 0);
+    syn.sort((a, b) => a.displayName.localeCompare(b.displayName));
     if (syn.length > window.CORE.CONFIG.maxSymbols) syn = syn.slice(0, window.CORE.CONFIG.maxSymbols);
     return syn;
   }
@@ -452,7 +494,7 @@ if (typeof module !== "undefined" && module.exports){
     }
     let https = "untested";
     try {
-      await fetch("https://ws.derivws.com/websockets/v3?app_id=1089", { mode: "no-cors", cache: "no-store" });
+      await fetch("https://api.derivws.com/v1/health", { mode: "no-cors", cache: "no-store" });
       https = "reachable";
     } catch(e){ https = "blocked"; }
     return { results, https };
@@ -512,10 +554,10 @@ if (typeof module !== "undefined" && module.exports){
           try {
             const { candles, prices, rawPrices } = await fetchSymbol(s.symbol);
             return { ok: true, row: window.CORE.analyzeSymbol(
-              { symbol: s.symbol, displayName: s.display_name || s.symbol },
+              { symbol: s.symbol, displayName: s.displayName, pip: s.pip },
               candles, prices, Math.floor(Date.now() / 1000), rawPrices) };
           } catch (e) {
-            return { ok: false, symbol: s.symbol, name: s.display_name || s.symbol, err: e.message };
+            return { ok: false, symbol: s.symbol, name: s.displayName, err: e.message };
           }
         }));
         for (const r of results){
@@ -642,7 +684,8 @@ if (typeof module !== "undefined" && module.exports){
 
   /* expose core globally for the app + tests */
   window.CORE = {
-    CONFIG, computeMetrics, botReadyState, parityState, lastDigitOf, percentileRanks, rankRows, analyzeSymbol, sign
+    CONFIG, computeMetrics, botReadyState, parityState, lastDigitOf, normalizeActiveSymbols,
+    pipDecimals, percentileRanks, rankRows, analyzeSymbol, sign
   };
 })();
 </script>

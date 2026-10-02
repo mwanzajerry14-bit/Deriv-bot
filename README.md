@@ -130,7 +130,10 @@ Your bot's blocks can only see the market they're loaded with — so the compani
 
 **Run it:** open **`https://mwanzajerry14-bit.github.io/Deriv-bot/`** and press *Scan markets* —
 or double-click the downloaded `Best_Market_Analyzer.html` in Chrome. It connects from *your*
-browser straight to Deriv's public WebSocket API (no login, `app_id 1089`).
+browser straight to Deriv's public WebSocket API (no login — current endpoint
+`wss://api.derivws.com/trading/v1/options/ws/public`, with the legacy `ws.derivws.com` /
+`ws.binaryws.com` hosts kept as automatic fallbacks; Deriv retired the legacy hosts in 2026,
+which is exactly what the first failure banners were reporting).
 If a scan fails, the red panel runs an automatic **per-endpoint connection test** (WebSocket
 reachability per host vs plain HTTPS) and tells you what to try — usually an ad-block/VPN
 extension, a different network (phone hotspot), or `status.deriv.com`.
