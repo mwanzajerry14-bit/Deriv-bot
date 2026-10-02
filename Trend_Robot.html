@@ -328,6 +328,12 @@ function pickSignal(rows){
            score: w.score, pip: w.pip, checks: w.ready.checks };
 }
 
+/* browser export — without this every window.CORE_R.* read in the app throws */
+if (typeof window !== "undefined"){
+  window.CORE_R = { CONFIG, round2, sign, computeMetrics, botReadyState, percentileRanks, rankRows,
+                    analyzeSymbol, normalizeActiveSymbols, moneyInit, moneyOnLose, moneyOnWin,
+                    moneyShrink, isBroke, tpHit, slHit, sessionPl, pickSignal };
+}
 if (typeof module !== "undefined" && module.exports){
   module.exports = { CONFIG, round2, sign, computeMetrics, botReadyState, percentileRanks, rankRows,
                      analyzeSymbol, normalizeActiveSymbols, moneyInit, moneyOnLose, moneyOnWin,
