@@ -129,6 +129,10 @@ the `0.05` in Initialization if you want longer runs (e.g. `0.15` ≈ three wins
 Your bot's blocks can only see the market they're loaded with — so the companion tool ranks
 **every Volatility index** for you, then you set the winner in Trade parameters (two clicks).
 
+The **Trend Robot** uses the same gate plus a **minimum entry score of 85** (editable in
+*Strategy settings*): a market that is 4/4 but scores below 85 is shown in the table as
+*4/4 but score X < 85* and **no buy happens**.
+
 **Run it:** open **`https://mwanzajerry14-bit.github.io/Deriv-bot/`** and press *Scan markets* —
 or double-click the downloaded `Best_Market_Analyzer.html` in Chrome. It connects from *your*
 browser straight to Deriv's public WebSocket API (no login — current endpoint

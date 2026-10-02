@@ -56,7 +56,7 @@ check("both scripts load without throwing", loadError === null, loadError && loa
 check("window.CORE_R exported", sandbox.window.CORE_R && typeof sandbox.window.CORE_R === "object",
   String(sandbox.window.CORE_R));
 
-const need = ["CONFIG", "pickSignal", "moneyInit", "moneyOnWin", "moneyOnLose", "moneyShrink",
+const need = ["CONFIG", "pickSignal", "entryThreshold", "moneyInit", "moneyOnWin", "moneyOnLose", "moneyShrink",
   "isBroke", "tpHit", "slHit", "sessionPl", "analyzeSymbol", "rankRows",
   "normalizeActiveSymbols", "round2", "botReadyState"];
 if (sandbox.window.CORE_R) {

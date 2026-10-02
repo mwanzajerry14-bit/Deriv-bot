@@ -67,27 +67,53 @@ const r2 = x => Math.round((x + Number.EPSILON) * 100) / 100;
   check("sessionPl rounds to cents", C.sessionPl(s, 2.007) === 0.01, C.sessionPl(s, 2.007));
 }
 
-// ---------- pickSignal ----------
+// ---------- pickSignal: 4/4 AND score >= entry threshold (default 85) ----------
 {
   const mk = (sym, passed, side, score) => ({
     symbol: sym, displayName: sym, score,
     ready: { side: passed ? side : (side || null), passed, checks: [] }
   });
+  check("entry threshold default = 85", C.CONFIG.entryScore === 85, C.CONFIG.entryScore);
   check("no rows -> null", C.pickSignal([]) === null);
   check("no 4/4 -> null", C.pickSignal([mk("A", 3, "CALL", 90), mk("B", 2, "PUT", 80)]) === null);
 
-  const rows = [mk("A", 3, "CALL", 99), mk("B", 4, "PUT", 55), mk("C", 4, "CALL", 77)];
-  const sig = C.pickSignal(rows);
-  check("picks best-scoring 4/4 (C, score 77)",
-    sig && sig.symbol === "C" && sig.side === "CALL" && sig.score === 77, JSON.stringify(sig));
+  check("4/4 score 84.9 -> REJECTED (below 85)",
+    C.pickSignal([mk("A", 4, "CALL", 84.9)]) === null, JSON.stringify(C.pickSignal([mk("A", 4, "CALL", 84.9)])));
+  check("4/4 score 85 -> taken (boundary)",
+    (() => { const s = C.pickSignal([mk("A", 4, "CALL", 85)]); return s && s.symbol === "A"; })(),
+    JSON.stringify(C.pickSignal([mk("A", 4, "CALL", 85)])));
+  check("empty input falls back to 85, not 0",
+    C.pickSignal([mk("A", 4, "CALL", 84.9)], "") === null &&
+    C.pickSignal([mk("A", 4, "CALL", 84.9)], null) === null);
 
-  const one = C.pickSignal([mk("X", 4, "PUT", 41)]);
-  check("single qualifier passes side through",
+  const rows = [mk("A", 3, "CALL", 99), mk("B", 4, "PUT", 91), mk("C", 4, "CALL", 88)];
+  const sig = C.pickSignal(rows);
+  check("best qualifying 4/4 wins (B, 91)",
+    sig && sig.symbol === "B" && sig.side === "PUT" && sig.score === 91, JSON.stringify(sig));
+
+  const mixed = [mk("A", 4, "CALL", 96), mk("B", 4, "PUT", 80)];
+  const sig2 = C.pickSignal(mixed);
+  check("above-threshold beats below-threshold (96 wins)",
+    sig2 && sig2.symbol === "A", JSON.stringify(sig2));
+
+  check("custom threshold respected (77 @ min 50 -> taken)",
+    (() => { const s = C.pickSignal([mk("C", 4, "CALL", 77)], 50); return s && s.symbol === "C"; })(),
+    JSON.stringify(C.pickSignal([mk("C", 4, "CALL", 77)], 50)));
+  check("custom threshold respected (91 @ min 95 -> null)",
+    C.pickSignal([mk("C", 4, "CALL", 91)], 95) === null);
+
+  const one = C.pickSignal([mk("X", 4, "PUT", 95)]);
+  check("qualifier passes side through",
     one && one.symbol === "X" && one.side === "PUT", JSON.stringify(one));
 
   const noSide = [{ symbol: "Z", displayName: "Z", score: 100,
                     ready: { side: null, passed: 4, checks: [] } }];
   check("4/4 without side ignored", C.pickSignal(noSide) === null, JSON.stringify(C.pickSignal(noSide)));
+
+  check("entryThreshold: ''->85, '70'->70, null->85, junk->85",
+    C.entryThreshold("") === 85 && C.entryThreshold("70") === 70 &&
+    C.entryThreshold(null) === 85 && C.entryThreshold("abc") === 85,
+    [C.entryThreshold(""), C.entryThreshold("70"), C.entryThreshold(null), C.entryThreshold("abc")].join(","));
 }
 
 // ---------- scanner mirror (sanity, same fixtures style as analyzer tests) ----------

@@ -64,9 +64,9 @@ function makeMockWS() {
         { symbol: "R_50", display_name: "Volatility 50 Index", market: "synthetic_index", pip_size: 4 }
       ]});
       if (m.ticks_history != null && m.style === "candles")
-        return withRid({ candles: m.symbol === "R_50" ? candlesFlat() : candlesR10() });
+        return withRid({ candles: m.ticks_history === "R_50" ? candlesFlat() : candlesR10() });
       if (m.ticks_history != null && m.style === "ticks")
-        return withRid({ history: { prices: m.symbol === "R_50" ? pricesFlat() : pricesR10() } });
+        return withRid({ history: { prices: m.ticks_history === "R_50" ? pricesFlat() : pricesR10() } });
       if (m.authorize != null) {
         if (m.authorize !== TOKEN)
           return withRid({ msg_type: "authorize", error: { code: "InvalidToken", message: "Your token has expired or is invalid." } });
@@ -161,6 +161,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   els.inpToken = els.inpToken || mkEl(); els.inpToken.value = TOKEN;
   els.inpApp = els.inpApp || mkEl(); els.inpApp.value = "1089";
   els.selAcct = els.selAcct || mkEl(); els.selAcct.value = "demo";
+  els.inpMinScore = els.inpMinScore || mkEl(); els.inpMinScore.value = "85";
 
   // 1) Connect & scan
   await els.btnScan._handlers.click();
