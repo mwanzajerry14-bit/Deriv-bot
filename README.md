@@ -175,13 +175,14 @@ your bots' exact same engine in the browser: public WSS sweep over **every Volat
    settles normally). The journal records every signal, proposal, buy and settlement.
 
 **How authentication works** (all verified against Deriv's current API): your browser calls
-`GET https://api.derivws.com/trading/v1/options/accounts` with `Authorization: Bearer <token>`,
-picks your demo/real account, requests a one-time WebSocket URL via `POST …/accounts/{id}/otp`,
-and opens that URL for balance / proposal / buy / settlement updates. The token is stored only
-in your browser's localStorage (revoke it anytime). REST/WS errors — e.g. *Missing
-authorization header*, *Invalid token format*, expired token — are printed **verbatim** in the
-robot journal. If a token is rejected, register a free app id at `developers.deriv.com` and set
-it as **App ID**.
+`GET https://api.derivws.com/trading/v1/options/accounts` with `Authorization: Bearer <PAT>` +
+`Deriv-App-ID: <registered app id>`, picks your demo/real account, requests a one-time WebSocket
+URL via `POST …/accounts/{id}/otp`, and opens that URL for balance / proposal / buy / settlement
+updates. The token is stored only in your browser's localStorage (revoke it anytime). REST/WS
+errors are printed **verbatim** in the robot journal. **Important:** the new API rejects
+*legacy* App IDs (like `1089`) with `401 Invalid application` — register a free **PAT-type**
+application at `developers.deriv.com` (Dashboard → Register application), use its alphanumeric
+App ID here, and generate the matching **trade**-scoped token from the same Dashboard.
 
 **Safety rails:** arm is blocked without a token; default account is Demo; balance < $0.35
 auto-disarms (⛔); TP/SL close the session (🎯/🛑); one open contract at a time; unknown

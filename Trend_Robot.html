@@ -95,7 +95,7 @@
       <div>
         <label class="f">App ID</label>
         <input type="text" id="inpApp" value="1089">
-        <div class="hint">Leave 1089 unless your token belongs to a registered app.</div>
+        <div class="hint">Must be a <b>registered PAT-app ID</b> from <a href="https://developers.deriv.com" target="_blank" rel="noopener">developers.deriv.com</a> — legacy IDs (1089) are rejected by the new API.</div>
       </div>
       <div>
         <label class="f">Account ID override (optional)</label>
@@ -783,9 +783,23 @@ if (typeof module !== "undefined" && module.exports){
       await maybeTrade();
     } catch (e){
       log("Arm failed: " + e.message, "e");
-      banner("<b>Could not arm.</b> " + esc(e.message) +
-        "<br>• Token needs <b>Read + Trade</b> permissions and must be unexpired.<br>" +
-        "• If it keeps failing, create a free app id at <code>developers.deriv.com</code> and use it as App ID.");
+      let hint;
+      if (/Invalid application/i.test(e.message)){
+        hint = "<b>App ID rejected — legacy IDs (like 1089) no longer work with the new API.</b><br>" +
+          "1. Open <b>developers.deriv.com</b> → log in → Dashboard → <b>Register application</b> → type <b>PAT</b>.<br>" +
+          "2. Copy the generated <b>App ID</b> (alphanumeric, may contain letters/dashes) into this page's App ID field.<br>" +
+          "3. Same Dashboard → <b>API tokens</b> → create a token with <b>trade</b> scope → paste it above → Arm again.";
+      } else if (/Deriv-App-ID header is required/i.test(e.message)){
+        hint = "<b>Fill the App ID field</b> with your registered PAT-app ID from developers.deriv.com.";
+      } else if (/Invalid token format/i.test(e.message)){
+        hint = "<b>Token looks malformed.</b> Regenerate it: developers.deriv.com → Dashboard → API tokens (PAT, trade scope) — or app.deriv.com → Settings → API tokens (Read + Trade).";
+      } else if (/HTTP 401/i.test(e.message)){
+        hint = "<b>401 from Deriv.</b> The token needs <b>trade</b> scope and must be unexpired; the App ID must be a registered PAT-type application from developers.deriv.com.";
+      } else {
+        hint = "Token needs <b>Read + Trade</b> permissions and must be unexpired.<br>" +
+          "Create both the App ID and token at <code>developers.deriv.com</code> (register a <b>PAT</b> application, then its API token).";
+      }
+      banner("<b>Could not arm.</b> " + esc(e.message) + "<br>" + hint);
       setMode(state.auth ? "scanning" : "disarmed");
     } finally { $("btnArm").disabled = false; }
   });
