@@ -174,15 +174,16 @@ your bots' exact same engine in the browser: public WSS sweep over **every Volat
 5. Big red **STOP** disarms instantly and never places new entries (any open contract still
    settles normally). The journal records every signal, proposal, buy and settlement.
 
-**How authentication works** (all verified against Deriv's current API): your browser calls
-`GET https://api.derivws.com/trading/v1/options/accounts` with `Authorization: Bearer <PAT>` +
-`Deriv-App-ID: <registered app id>`, picks your demo/real account, requests a one-time WebSocket
-URL via `POST …/accounts/{id}/otp`, and opens that URL for balance / proposal / buy / settlement
-updates. The token is stored only in your browser's localStorage (revoke it anytime). REST/WS
-errors are printed **verbatim** in the robot journal. **Important:** the new API rejects
-*legacy* App IDs (like `1089`) with `401 Invalid application` — register a free **PAT-type**
-application at `developers.deriv.com` (Dashboard → Register application), use its alphanumeric
-App ID here, and generate the matching **trade**-scoped token from the same Dashboard.
+**How authentication works** (verified against Deriv's current API): the robot opens the
+options WebSocket and sends a plain **`authorize` with your token — no App ID, OTP or
+registration required** (the new API forbids `app_id` on that socket entirely). It picks the
+demo/real account from the token's account list, subscribes to balance, then trades on the same
+session (`proposal` with `underlying_symbol` → `buy: {token, price}` → `proposal_open_contract`
+for settlement). A REST + OTP flow is kept as automatic fallback for registered (non-legacy)
+App IDs. The token is stored only in your browser's localStorage (revoke it anytime). All
+errors print **verbatim** in the robot journal. The REST fallback rejects *legacy* App IDs
+(like `1089`) with `401 Invalid application` — that path needs a PAT-type app registered at
+`developers.deriv.com`, but you should not need it in direct mode.
 
 **Safety rails:** arm is blocked without a token; default account is Demo; balance < $0.35
 auto-disarms (⛔); TP/SL close the session (🎯/🛑); one open contract at a time; unknown

@@ -95,7 +95,7 @@
       <div>
         <label class="f">App ID</label>
         <input type="text" id="inpApp" value="1089">
-        <div class="hint">Must be a <b>registered PAT-app ID</b> from <a href="https://developers.deriv.com" target="_blank" rel="noopener">developers.deriv.com</a> — legacy IDs (1089) are rejected by the new API.</div>
+        <div class="hint"><b>Not needed for normal use</b> — direct token mode needs no App ID. Only for the REST fallback: a registered PAT-app ID from <a href="https://developers.deriv.com" target="_blank" rel="noopener">developers.deriv.com</a> (1089 is rejected there).</div>
       </div>
       <div>
         <label class="f">Account ID override (optional)</label>
@@ -134,7 +134,7 @@
   <div class="card"><h3>Robot journal</h3><div id="log"></div></div>
 
   <footer>
-    <b>How it works:</b> public WSS (<code>wss://api.derivws.com/trading/v1/options/ws/public</code>) sweeps up to 24 Volatility indices every few seconds — trend/strong/efficiency/tick-momentum metrics + the bot's exact 4-check gate. When ARMED and idle, the first qualifier (highest score if several tie in one sweep) triggers a proposal → buy on your authenticated session, with the same stake floors/caps, TP/SL and one-trade-at-a-time rule as your XML bots. Settlement is tracked live; unknown outcomes auto-disarm.<br>
+    <b>How it works:</b> public WSS (<code>wss://api.derivws.com/trading/v1/options/ws/public</code>) sweeps up to 24 Volatility indices every few seconds — trend/strong/efficiency/tick-momentum metrics + the bot's exact 4-check gate. When ARMED and idle, the first qualifier (highest score if several tie in one sweep) triggers proposal → buy on an authenticated session created by <b>direct <code>authorize</code> with your token</b> (no App ID / registration needed; REST+OTP only as fallback), with the same stake floors/caps, TP/SL and one-trade-at-a-time rule as your XML bots. Settlement is tracked live; unknown outcomes auto-disarm.<br>
     <b>Safety:</b> STOP never leaves new entries; balance &lt; $0.35 auto-disarms; TP/SL close the session; token lives only in your browser — revoke it when finished. Not financial advice. Test on demo first.
   </footer>
 </div>
@@ -550,15 +550,60 @@ if (typeof module !== "undefined" && module.exports){
     return isFinite(n) ? round2(n) : null;
   }
 
-  async function authConnect(){
-    const token = ($("inpToken").value || "").trim();
-    const appId = ($("inpApp").value || "1089").trim();
-    const acctType = $("selAcct").value;
-    if (!token) throw new Error("No API token — create one (Read + Trade) and paste it first.");
-    localStorage.setItem("dr_robot_token", token);
-    localStorage.setItem("dr_robot_app", appId);
-    localStorage.setItem("dr_robot_acct", acctType);
-    setStatus("Authenticating (" + acctType + ")…");
+  function openAuthWs(url){
+    return new Promise((resolve, reject) => {
+      let w;
+      try { w = new WebSocket(url); } catch(e){ return reject(e); }
+      const t = setTimeout(() => reject(new Error("auth WebSocket timeout")), 12000);
+      w.onopen = () => { clearTimeout(t); resolve(w); };
+      w.onerror = () => { clearTimeout(t); reject(new Error("auth WebSocket failed (" + new URL(url).host + ")")); };
+    });
+  }
+
+  /* PRIMARY: direct token mode — authorize on the options WS itself.
+     No App ID / OTP / developers.deriv.com registration needed. */
+  async function authDirect(token, acctType){
+    let ws = null, lastErr = null;
+    for (const url of window.CORE_R.CONFIG.endpoints){
+      try { ws = await openAuthWs(url); break; } catch(e){ lastErr = e; }
+    }
+    if (!ws) throw lastErr || new Error("no endpoint reachable");
+    ws.onmessage = ev => routeMsg(ws, ev, onAuthMsg);
+    let resp;
+    try {
+      resp = await wsSend(ws, { authorize: token }, 12000);
+    } catch(e){
+      try { ws.close(); } catch(_){}
+      throw e;
+    }
+    let data = (resp.authorize && typeof resp.authorize === "object") ? resp.authorize : resp;
+    const isVirt = a => a === true || a === 1 || a === "1" ||
+      String((a && a.loginid) || "").indexOf("VRT") === 0;
+    const wantVirtual = acctType === "demo";
+    const list = Array.isArray(data.account_list) ? data.account_list : [];
+    if (list.length){
+      const desired = list.find(a => wantVirtual ? isVirt(a) || isVirt(a.is_virtual) : !(isVirt(a) || isVirt(a.is_virtual)));
+      if (!desired) throw new Error("Token has no " + (wantVirtual ? "demo" : "real") + " account — available: " + list.map(a => a.loginid).join(", "));
+      if (desired.loginid && desired.loginid !== data.loginid){
+        const r2 = await wsSend(ws, { authorize: token, loginid: desired.loginid }, 12000);
+        if (r2.authorize && typeof r2.authorize === "object") data = r2.authorize;
+      }
+    } else if (isVirt(data.is_virtual) !== wantVirtual){
+      try { ws.close(); } catch(_){}
+      throw new Error("Active account " + (data.loginid || "?") + " does not match selected " + acctType + " (and no account list to switch) — change the Account selector or use a token for that account.");
+    }
+    state.currency = data.currency || "USD";
+    state.auth = ws;
+    clearInterval(state.aping);
+    state.aping = setInterval(() => { try { ws.send(JSON.stringify({ping:1})); } catch(e){} }, 25000);
+    const nb = Number(data.balance);
+    if (isFinite(nb) && nb > 0) state.lastBal = round2(nb);
+    log("Authorized: " + (data.loginid || "account") + " · " + state.currency + (isVirt(data.is_virtual) ? " · demo" : " · real"), "s");
+    await finishSession();
+  }
+
+  /* FALLBACK: REST OTP flow — requires a registered (non-legacy) App ID. */
+  async function authViaOtp(token, appId, acctType){
     const accs = await jreq("/trading/v1/options/accounts", "GET", token, appId);
     let list = deepFind(accs, "accounts");
     if (!Array.isArray(list)) list = [];
@@ -581,17 +626,38 @@ if (typeof module !== "undefined" && module.exports){
     const wsUrl = deepFind(otp, "url");
     if (!wsUrl) throw new Error("No WebSocket url in OTP response: " + JSON.stringify(otp).slice(0, 180));
     log("OTP ok — opening authenticated session (" + acctType + ", account " + acct + ")", "s");
-    const ws = await new Promise((resolve, reject) => {
-      const w = new WebSocket(wsUrl);
-      const t = setTimeout(() => reject(new Error("auth WebSocket timeout")), 12000);
-      w.onopen = () => { clearTimeout(t); resolve(w); };
-      w.onerror = () => { clearTimeout(t); reject(new Error("auth WebSocket failed (check token/App ID)")); };
-    });
+    const ws = await openAuthWs(wsUrl);
     state.auth = ws;
     ws.onmessage = ev => routeMsg(ws, ev, onAuthMsg);
     clearInterval(state.aping);
     state.aping = setInterval(() => { try { ws.send(JSON.stringify({ping:1})); } catch(e){} }, 25000);
-    // balance subscription
+    await finishSession();
+  }
+
+  async function authConnect(){
+    const token = ($("inpToken").value || "").trim();
+    const appId = ($("inpApp").value || "1089").trim();
+    const acctType = $("selAcct").value;
+    if (!token) throw new Error("No API token — create one (Read + Trade) and paste it first.");
+    localStorage.setItem("dr_robot_token", token);
+    localStorage.setItem("dr_robot_app", appId);
+    localStorage.setItem("dr_robot_acct", acctType);
+    setStatus("Authenticating (" + acctType + ")…");
+    let directErr = null;
+    try {
+      await authDirect(token, acctType);
+      log("Direct token mode — no App ID needed.", "s");
+      return;
+    } catch(e){ directErr = e; log("Direct authorize failed: " + e.message + " — trying REST OTP fallback…", "w"); }
+    try {
+      await authViaOtp(token, appId, acctType);
+      return;
+    } catch(e){
+      throw new Error(directErr.message + "  |  REST OTP fallback: " + e.message);
+    }
+  }
+
+  async function finishSession(){
     try {
       const b = await wsSend(state.auth, { balance: 1, subscribe: 1 }, 10000);
       state.lastBal = numBalance(b);
@@ -601,7 +667,7 @@ if (typeof module !== "undefined" && module.exports){
       try { const b2 = await wsSend(state.auth, { balance: 1 }, 10000); state.lastBal = numBalance(b2); } catch(e2){}
     }
     if (!state.lastBal || state.lastBal <= 0){
-      throw new Error("Could not read account balance — check token, account type and App ID.");
+      throw new Error("Could not read account balance — check token and account type.");
     }
     state.money = window.CORE_R.moneyInit(state.lastBal);
     state.trades = 0; state.wins = 0;
@@ -662,15 +728,17 @@ if (typeof module !== "undefined" && module.exports){
       currency: state.currency || "USD",
       duration: Number($("inpDur").value) || 5,
       duration_unit: "t",
-      symbol: sig.symbol
+      underlying_symbol: sig.symbol
     }, 12000);
     const prop = deepFind(p, "proposal") || p;
-    const price = prop.price != null ? prop.price : prop.ask_price;
+    const price = prop.ask_price != null ? prop.ask_price : prop.price;
+    const buyTok = prop.id != null ? prop.id : (prop.token != null ? prop.token : null);
     if (price == null) throw new Error("no price in proposal: " + JSON.stringify(p).slice(0, 160));
+    if (buyTok == null) throw new Error("no proposal token in: " + JSON.stringify(p).slice(0, 160));
     log("Proposal ok — price " + price + (prop.payout ? " · payout " + prop.payout : ""), "i");
-    const b = await wsSend(state.auth, { buy: price }, 12000);
+    const b = await wsSend(state.auth, { buy: buyTok, price: String(price) }, 12000);
     const buy = deepFind(b, "buy") || b;
-    const cid = buy.contract_id != null ? buy.contract_id : buy.id;
+    const cid = buy.contract_id != null ? buy.contract_id : (buy.id != null ? buy.id : deepFind(b, "contract_id"));
     if (cid == null) throw new Error("no contract id in buy: " + JSON.stringify(b).slice(0, 160));
     state.current.contractId = cid;
     state.current.phase = "open";
@@ -712,8 +780,20 @@ if (typeof module !== "undefined" && module.exports){
     settleTrade(won, profit);
   }
 
-  function settleTrade(won, profit){
+  async function settleTrade(won, profit){
     const cur = state.current;
+    // re-query balance so TP/SL and win-reset use the exact post-settlement number
+    try {
+      const b = await wsSend(state.auth, { balance: 1 }, 8000);
+      const nb = numBalance(b);
+      if (nb != null) state.lastBal = nb;
+    } catch(e){
+      log("Balance refresh after settle failed: " + e.message, "w");
+      if (isFinite(profit)){
+        const est = round2((state.lastBal || 0) + profit);
+        if (est > 0) state.lastBal = est;
+      }
+    }
     state.trades++;
     if (won){ state.wins++; window.CORE_R.moneyOnWin(state.money, state.lastBal || 0); }
     else window.CORE_R.moneyOnLose(state.money);
@@ -784,20 +864,23 @@ if (typeof module !== "undefined" && module.exports){
     } catch (e){
       log("Arm failed: " + e.message, "e");
       let hint;
-      if (/Invalid application/i.test(e.message)){
-        hint = "<b>App ID rejected — legacy IDs (like 1089) no longer work with the new API.</b><br>" +
-          "1. Open <b>developers.deriv.com</b> → log in → Dashboard → <b>Register application</b> → type <b>PAT</b>.<br>" +
-          "2. Copy the generated <b>App ID</b> (alphanumeric, may contain letters/dashes) into this page's App ID field.<br>" +
-          "3. Same Dashboard → <b>API tokens</b> → create a token with <b>trade</b> scope → paste it above → Arm again.";
+      if (/expired or is invalid|InvalidToken/i.test(e.message)){
+        hint = "<b>Deriv rejected the token</b> (direct mode — no App ID needed).<br>" +
+          "• Regenerate it: app.deriv.com → <b>Settings → API tokens</b> → permissions <b>Read + Trade</b> → paste the fresh token.<br>" +
+          "• Check the token hasn't expired or been revoked.";
+      } else if (/does not match selected|no .* account/i.test(e.message)){
+        hint = "<b>Account mismatch:</b> the token's account doesn't match the Account selector. Switch the selector (Demo/Real) to the account the token belongs to.";
+      } else if (/Invalid application/i.test(e.message)){
+        hint = "<b>REST fallback rejected the App ID</b> — legacy IDs (like 1089) don't work there.<br>" +
+          "Fix the <b>token</b> instead so direct mode succeeds (see journal for the direct-mode error), or register a PAT app at <b>developers.deriv.com</b> and paste its App ID.";
       } else if (/Deriv-App-ID header is required/i.test(e.message)){
-        hint = "<b>Fill the App ID field</b> with your registered PAT-app ID from developers.deriv.com.";
+        hint = "<b>Fill the App ID field</b> (registered PAT-app ID from developers.deriv.com) so the REST fallback can run.";
       } else if (/Invalid token format/i.test(e.message)){
-        hint = "<b>Token looks malformed.</b> Regenerate it: developers.deriv.com → Dashboard → API tokens (PAT, trade scope) — or app.deriv.com → Settings → API tokens (Read + Trade).";
+        hint = "<b>Token looks malformed.</b> Regenerate it: app.deriv.com → Settings → API tokens (Read + Trade).";
       } else if (/HTTP 401/i.test(e.message)){
-        hint = "<b>401 from Deriv.</b> The token needs <b>trade</b> scope and must be unexpired; the App ID must be a registered PAT-type application from developers.deriv.com.";
+        hint = "<b>401 from Deriv.</b> Token needs <b>Read + Trade</b> scope and must be unexpired.";
       } else {
-        hint = "Token needs <b>Read + Trade</b> permissions and must be unexpired.<br>" +
-          "Create both the App ID and token at <code>developers.deriv.com</code> (register a <b>PAT</b> application, then its API token).";
+        hint = "Token needs <b>Read + Trade</b> permissions and must be unexpired. In direct mode no App ID is required — see the journal for the exact errors from each path.";
       }
       banner("<b>Could not arm.</b> " + esc(e.message) + "<br>" + hint);
       setMode(state.auth ? "scanning" : "disarmed");
