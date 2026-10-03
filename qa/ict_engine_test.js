@@ -245,5 +245,71 @@ if (trades.length) {
 const btFlat = C.backtestRun({ c1m: flat, net: NET, expiryMin: 1, stake: 7.5, cfg: { threshold: 11 } });
 eq("backtest on flat = 0 trades (NO TRADE default)", btFlat.length, 0);
 
+/* ---------- digit signals: Even/Odd parity + Matches/Differs ---------- */
+const mkTicks = ds => ds.map(d => "100.00" + d);   // pip 0.001 → toFixed(3), last char = digit
+// parity: XML bot rule (anchor 10 back + >=6/10 agreement)
+const allEven = Array.from({ length: 120 }, (_, i) => (i % 5) * 2);
+const p1 = C.parityState(mkTicks(allEven), 0.001);
+ok("digit parity: all-even → ready Even, agree 10/10, anchor ok",
+  p1.ready && p1.side === "Even" && p1.agree === 10 && p1.anchorOK === true, JSON.stringify(p1));
+const anchorBad = Array.from({ length: 120 }, (_, i) => (i % 5) * 2);
+anchorBad[109] = 1;   // digit 10 ticks back is odd while newest is even
+const p2 = C.parityState(mkTicks(anchorBad), 0.001);
+ok("digit parity: anchor mismatch → not ready (side still Even)",
+  p2.ready === false && p2.anchorOK === false && p2.side === "Even", JSON.stringify(p2));
+const weakAgree = Array.from({ length: 120 }, (_, i) => (i % 5) * 2);
+[113, 114, 115, 116, 117, 118].forEach(i => { weakAgree[i] = 1; });  // last10: e e e o o o o o o e → agree 4
+const p3 = C.parityState(mkTicks(weakAgree), 0.001);
+ok("digit parity: agree 4/10 → not ready (anchor ok)",
+  p3.ready === false && p3.anchorOK === true && p3.agree === 4, JSON.stringify(p3));
+const p4 = C.parityState(mkTicks([2, 4, 6]), 0.001);
+ok("digit parity: <11 ticks → need 11+ ticks", p4.ready === false && /need/.test(p4.note), JSON.stringify(p4));
+const p5 = C.parityState(Array.from({ length: 20 }, () => "100.4"), 0.1);
+ok("pip-aware digit: '100.4' @ pip 0.1 → 4 → Even ready",
+  p5.ready && p5.side === "Even", JSON.stringify(p5));
+ok("lastDigitOf/pipDecimals basics", C.lastDigitOf("500.7") === 7 && C.pipDecimals(0.001) === 3 && C.pipDecimals(0.5) === 0 && C.pipDecimals(0) === null, "");
+// histogram
+const uniform = Array.from({ length: 1000 }, (_, i) => i % 10);
+const s1 = C.digitStatsOf(mkTicks(uniform), 0.001);
+ok("digitStats: uniform n=1000, 100 each", s1.n === 1000 && s1.counts[0] === 100 && s1.hot.count === 100, JSON.stringify(s1.counts));
+const skewed = uniform.slice();
+for (let i = 0; i < 20; i++) skewed[i * 10] = 4;   // 20 zeros → fours: 0=80, 4=120
+const s2 = C.digitStatsOf(mkTicks(skewed), 0.001);
+ok("digitStats: hot 4 @ 12% / cold 0 @ 8%",
+  s2.hot.digit === 4 && Math.abs(s2.hot.share - 0.12) < 1e-9 &&
+  s2.cold.digit === 0 && Math.abs(s2.cold.share - 0.08) < 1e-9, JSON.stringify([s2.hot, s2.cold]));
+// evaluateDigits: uniform → NO signals (no edge, no trade)
+const e1 = C.evaluateDigits(mkTicks(uniform), 0.001, {});
+ok("evaluateDigits: uniform ticks → zero signals (no edge)", e1.signals.length === 0 && e1.parity.ready === false, JSON.stringify(e1.signals));
+// ready parity + hot 4 → DIGITEVEN + DIGITMATCH eligible; cold 8.2% diff pushed but EV-rejected at net 0.10
+const dig = skewed.slice();
+for (let k = 0; k < 12; k++) dig[988 + k] = [0, 2, 4, 6, 8, 0, 2, 4, 6, 8, 4, 4][k];
+const e2 = C.evaluateDigits(mkTicks(dig), 0.001, {});
+const eo = e2.signals.find(s => s.kind === "parity");
+const mt = e2.signals.find(s => s.kind === "match");
+ok("evaluateDigits: parity ready → DIGITEVEN eligible (net 0.95)",
+  eo && eo.contract === "DIGITEVEN" && eo.side === "Even" && eo.eligible === true, JSON.stringify(eo));
+ok("evaluateDigits: hot 4 → DIGITMATCH eligible, barrier digit 4",
+  mt && mt.contract === "DIGITMATCH" && mt.digit === 4 && mt.eligible === true, JSON.stringify(mt));
+const df = e2.signals.find(s => s.kind === "diff");
+ok("evaluateDigits: cold diff at net 0.10 → pushed but NOT eligible (EV below floor)",
+  df && df.digit === 0 && df.eligible === false, JSON.stringify(df));
+ok("evaluateDigits: match EV outranks parity EV (why the robot picks M4)",
+  mt.ev > eo.ev, JSON.stringify([mt.ev, eo.ev]));
+// poor real-world payouts must fail the EV floor
+const e3 = C.evaluateDigits(mkTicks(dig), 0.001, { netEO: 0.5, netMatch: 5 });
+ok("evaluateDigits: poor payouts → every signal EV-rejected",
+  e2.signals.length > 0 && e3.signals.every(s => s.eligible === false),
+  JSON.stringify(e3.signals.map(s => [s.kind, s.ev])));
+// sample floor: 20% hot digit in only 100 ticks → suppressed (n < digitMinN)
+const small = skewed.slice(0, 100);
+for (let i = 0; i < 20; i++) small[i * 5] = 4;   // 30% fours — but n=100
+const e4 = C.evaluateDigits(mkTicks(small), 0.001, {});
+ok("evaluateDigits: n<200 → no match/diff even at 30% share",
+  !e4.signals.some(s => s.kind === "match" || s.kind === "diff"), JSON.stringify(e4.signals));
+// custom minAgree respected
+const e5 = C.evaluateDigits(mkTicks(allEven), 0.001, { minAgree: 8 });
+ok("evaluateDigits: minAgree cfg respected", e5.parity.ready === true && e5.parity.agree === 10, JSON.stringify(e5.parity));
+
 console.log(fails === 0 ? `\nICT ENGINE TEST PASSED ✓ (${passes} checks)` : `\n${fails} FAILURES ✗ (${passes} passed)`);
 process.exit(fails === 0 ? 0 : 1);

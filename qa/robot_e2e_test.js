@@ -70,6 +70,16 @@ function pageCandles(sym, end) {
   return eligible.slice(-1000);
 }
 
+/* ---- digit tick fixtures for the Digits strategy scenario ---- */
+function uniformDigits(){ return Array.from({ length: 1000 }, (_, i) => i % 10); }
+function evenRunDigits(){
+  const a = uniformDigits();
+  for (let i = 0; i < 20; i++) a[i * 10] = 4;                                   // hot 4 → ~12% of 1000
+  for (let k = 0; k < 12; k++) a[988 + k] = [0, 2, 4, 6, 8, 0, 2, 4, 6, 8, 4, 4][k]; // last 12 even → parity ready Even
+  return a;
+}
+const priceFor = (sym, d) => sym === "R_10" ? "100.00" + d : "100.000" + d;   // 3- vs 4-decimal pips
+
 /* ---- mock Deriv WebSocket ---- */
 function makeMockWS() {
   return class MockWS {
@@ -97,8 +107,12 @@ function makeMockWS() {
       }
       if (m.ticks_history != null && m.style === "candles")
         return withRid({ candles: pageCandles(m.ticks_history, m.end).slice(0, 80) });
-      if (m.ticks_history != null && m.style === "ticks")
-        return withRid({ history: { prices: Array.from({ length: 100 }, (_, i) => 500 + i * 0.1) } });
+      if (m.ticks_history != null && m.style === "ticks"){
+        MockWS.counts = MockWS.counts || {};
+        MockWS.counts["ticks:" + m.ticks_history] = (MockWS.counts["ticks:" + m.ticks_history] || 0) + 1;
+        const digits = m.ticks_history === "R_10" ? evenRunDigits() : uniformDigits();
+        return withRid({ history: { prices: digits.map(d => priceFor(m.ticks_history, d)) } });
+      }
       if (m.authorize != null) {
         if (m.authorize !== TOKEN)
           return withRid({ msg_type: "authorize", error: { code: "InvalidToken", message: "Your token has expired or is invalid." } });
@@ -116,6 +130,22 @@ function makeMockWS() {
         return withRid({ msg_type: "balance", balance: { balance: this._bal, currency: "USD" } });
       }
       if (m.proposal != null) {
+        MockWS.lastProposal = m;
+        const DIG = ["DIGITEVEN", "DIGITODD", "DIGITMATCH", "DIGITDIFF"];
+        if (DIG.indexOf(m.contract_type) >= 0) {
+          // digit contract: tick duration, barrier required for match/diff
+          const needsBarrier = m.contract_type === "DIGITMATCH" || m.contract_type === "DIGITDIFF";
+          const ok = m.underlying_symbol === "R_10" && m.duration_unit === "t" &&
+                     Number(m.duration) >= 1 && Number(m.duration) <= 10 && m.currency === "USD" &&
+                     Number(m.amount) > 0 &&
+                     (!needsBarrier || /^[0-9]$/.test(String(m.barrier)));
+          if (!ok) return withRid({ msg_type: "proposal", error: { code: "InputValidationFailed", message: "unexpected digit proposal: " + JSON.stringify(m) } });
+          const dPrice = Number(m.amount);
+          const dNet = (m.contract_type === "DIGITEVEN" || m.contract_type === "DIGITODD") ? 0.95
+                     : (m.contract_type === "DIGITMATCH" ? 8.5 : 0.10);
+          this._digNet = dNet;
+          return withRid({ msg_type: "proposal", proposal: { id: "32d2ec97-f568-6f7f-38c8-b1fda4275f32", ask_price: dPrice, payout: r2(dPrice * (1 + dNet)) } });
+        }
         // redesign contract: minute expiries, USD, price = stake, net payout 0.886
         const ok = m.underlying_symbol === "R_10" && m.duration_unit === "m" &&
                    [1, 2, 3, 5, 10].indexOf(Number(m.duration)) >= 0 && m.currency === "USD" &&
@@ -129,20 +159,22 @@ function makeMockWS() {
         const price = Number(m.price);
         const ok = typeof m.buy === "string" && m.buy.length >= 32 && price > 0 && Math.abs(price - 7.5) < 0.001;
         if (!ok) return withRid({ msg_type: "buy", error: { code: "InputValidationFailed", message: "bad buy: " + JSON.stringify(m) } });
+        const netNow = this._digNet != null ? this._digNet : NET;
         this._bal = r2(this._bal - price);
         setTimeout(() => {
           if (this.onmessage) this.onmessage({ data: JSON.stringify({ msg_type: "balance", balance: { balance: this._bal, currency: "USD" } }) });
         }, 10);
-        return withRid({ msg_type: "buy", buy: { contract_id: 987654, buy_price: price, payout: r2(price * (1 + NET)) } });
+        return withRid({ msg_type: "buy", buy: { contract_id: 987654, buy_price: price, payout: r2(price * (1 + netNow)) } });
       }
       if (m.proposal_open_contract != null) {
         const ridSave = rid;
+        const netP = this._digNet != null ? this._digNet : NET;
         withRid({ msg_type: "proposal_open_contract", proposal_open_contract: { contract_id: 987654, is_sold: 0, status: "open" } });
         setTimeout(() => {
-          const payout = r2(7.5 * (1 + NET));
+          const payout = r2(7.5 * (1 + netP));
           this._bal = r2(this._bal + payout);
           if (this.onmessage) this.onmessage({ data: JSON.stringify({ msg_type: "balance", balance: { balance: this._bal, currency: "USD" } }) });
-          if (this.onmessage) this.onmessage({ data: JSON.stringify({ msg_type: "proposal_open_contract", proposal_open_contract: { contract_id: 987654, is_sold: 1, status: "won", profit: r2(7.5 * NET) }, req_id: ridSave }) });
+          if (this.onmessage) this.onmessage({ data: JSON.stringify({ msg_type: "proposal_open_contract", proposal_open_contract: { contract_id: 987654, is_sold: 1, status: "won", profit: r2(7.5 * netP) }, req_id: ridSave }) });
         }, 20);
         return;
       }
@@ -185,6 +217,7 @@ const MockWS = makeMockWS();
 const htmlIds = new Set([...html.matchAll(/id="([A-Za-z0-9_]+)"/g)].map(m => m[1]));
 function buildSandbox() {
   MockWS.counts = {};   // per-scenario request counters
+  MockWS.lastProposal = null;
   const els = {};
   const store = {};
   const sandbox = {
@@ -302,6 +335,46 @@ async function tradeFlow(els, tag) {
     s2.els.modePill.textContent + " | " + s2.els.banner.innerHTML);
   await sleep(700);
   await tradeFlow(s2.els, "s2");
+  s2.els.btnStop._handlers.click();   // stop scenario 2 — an armed zombie would re-propose during s3
+  check("s2: STOP works", s2.els.modePill.textContent === "STOPPED", s2.els.modePill.textContent);
+
+  // ---------- scenario 3: Digits strategy (Even/Odd + Matches/Differs) ----------
+  console.log("\n--- scenario 3: digits mode (parity + match signal)");
+  const s3 = buildSandbox();
+  s3.els.selStrategy = mkEl();
+  s3.els.selStrategy.value = "digits";
+  s3.els.inpToken.value = TOKEN;
+  await s3.els.btnScan._handlers.click();
+  await sleep(500);
+  check("s3: digits mode fetches ticks only (no candle requests)",
+    ((MockWS.counts || {})["ticks:R_10"] || 0) === 1 &&
+    ((MockWS.counts || {})["ticks:R_50"] || 0) === 1 &&
+    !((MockWS.counts || {}).R_10), JSON.stringify(MockWS.counts));
+  await s3.els.btnArm._handlers.click();
+  await sleep(700);
+  const l3 = s3.els.log.innerHTML;
+  check("s3: ARMED digits copy (parity ≥6/10 + match/diff shares)",
+    /ARMED — flat 0\.75%\/trade, digit signals \(parity ≥6\/10 \+ match\/diff shares\) gated by the real-payout EV\./.test(l3),
+    l3.slice(-450));
+  check("s3: match setup on R_10 (hot digit 4, 5t)",
+    /SETUP: Volatility 10 Index \(R_10\) match 4 \([0-9.]+%\) · EV≈[0-9.]+ → stake \$7\.50 \(5t\)/.test(l3),
+    l3.slice(-700));
+  check("s3: R_50 (uniform digits) never set up", !/SETUP:.*R_50/.test(l3), l3.slice(-700));
+  const prop3 = MockWS.lastProposal;
+  check("s3: proposal = DIGITMATCH, barrier 4, 5 ticks, USD",
+    prop3 && prop3.contract_type === "DIGITMATCH" && String(prop3.barrier) === "4" &&
+    prop3.duration_unit === "t" && Number(prop3.duration) === 5 && prop3.currency === "USD",
+    JSON.stringify(prop3));
+  check("s3: OPEN digit contract label", /OPEN #987654 · Matches 4 R_10/.test(l3), l3.slice(-500));
+  check("s3: settlement pays the match payout (+$63.75 on 8.5 net)",
+    /WON #987654 · \+\$63\.75 · day P\/L \+\$63\.75 · consec 0/.test(l3), l3.slice(-500));
+  check("s3: exactly one contract opened", (l3.match(/OPEN #987654/g) || []).length === 1, "");
+  check("s3: digit win respects the +5% daily profit lock",
+    /Daily profit lock/.test(s3.els.banner.innerHTML), s3.els.banner.innerHTML);
+  check("s3: session stopped (SCANNING + RESUME offered)",
+    s3.els.modePill.textContent === "SCANNING" && s3.els.btnResume.style.display === "",
+    s3.els.modePill.textContent + " resume=" + s3.els.btnResume.style.display);
+  check("s3: stats 1 win recorded", s3.els.stTW.textContent === "1 (1/0)", s3.els.stTW.textContent);
 
   console.log(failures === 0 ? "\nROBOT E2E TEST PASSED ✓" : `\n${failures} FAILURES ✗`);
   process.exit(failures === 0 ? 0 : 1);

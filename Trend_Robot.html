@@ -132,6 +132,11 @@
   <div class="card">
     <h3>Risk &amp; quality gates (flat stakes — martingale removed)</h3>
     <div class="grid">
+      <div><label class="f">Strategy</label><select id="selStrategy">
+        <option value="ict" selected>ICT/SMC trends (13-point)</option>
+        <option value="digits">Digits — Even/Odd · Matches · Differs</option>
+        <option value="both">Both — best EV wins</option></select>
+        <div class="hint">All strategies share the same flat-stake risk locks.</div></div>
       <div><label class="f">Expiry for all markets (minutes)</label><select id="inpExpiry"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="5">5</option><option value="10">10</option></select>
         <div class="hint">Best expiry is found in the Backtest Lab and applied automatically.</div></div>
       <div><label class="f">Risk per trade (% of balance)</label><input type="number" id="inpRisk" value="0.75" min="0.5" max="1" step="0.05">
@@ -154,6 +159,21 @@
       <div class="stat"><div class="k">Loss streak</div><div class="v" id="stStreak">—</div></div>
       <div class="stat"><div class="k">Loss/Profit lock</div><div class="v" id="stTPSL">—</div></div>
     </div>
+  </div>
+
+  <div class="card" id="digCard">
+    <h3>Digit strategy — Even/Odd · Matches · Differs</h3>
+    <div class="grid">
+      <div><label class="f">Contract duration (ticks)</label><input type="number" id="inpDigTicks" value="5" min="1" max="10">
+        <div class="hint">Mirrors your EvenOdd XML bot (5 ticks).</div></div>
+      <div><label class="f">Parity agreement of last 10 ticks</label><input type="number" id="inpDigAgree" value="6" min="5" max="10">
+        <div class="hint">XML scanner rule: parity 10 ticks back must anchor the newest.</div></div>
+      <div><label class="f">Matches: min hot-digit share (%)</label><input type="number" id="inpDigMatch" value="11.5" min="10" max="40" step="0.5">
+        <div class="hint">Hot digit over the last 1000 ticks must clear this floor.</div></div>
+      <div><label class="f">Differs: max cold-digit share (%)</label><input type="number" id="inpDigDiff" value="8.5" min="1" max="10" step="0.5">
+        <div class="hint">Coldest digit must sit below this ceiling to be worth fading.</div></div>
+    </div>
+    <div class="hint" style="margin-top:8px">Scan-time EV uses conservative payout estimates (Even/Odd 0.95, Match 8.5, Diff 0.10); the LIVE proposal’s real payout still has to clear the EV gate — poor payout means NO TRADE. Digit biases are usually noise: most scans will correctly show no edge. The Backtest Lab validates the ICT threshold; digit gates are share floors, not backtested parameters.</div>
   </div>
 
   <div id="tableArea"><table><thead><tr><th>#</th><th>Market</th><th>Score</th><th>Side</th><th>Regime</th><th>Checks</th><th>Status</th></tr></thead><tbody><tr><td colspan="7" style="color:#8b949e;text-align:center;padding:24px">No scan yet — press <b>Connect &amp; scan</b>.</td></tr></tbody></table></div>
@@ -183,7 +203,7 @@
   </div>
 
   <footer>
-    <b>How it works:</b> paginated 1m candles feed an ICT/SMC engine (1H/15m HTF bias · liquidity sweep · BOS/CHOCH · displacement · FVG/obstacle · CRT ref-candle · premium/discount · momentum/volume · regime + no-chase guards). Critical checks (HTF, sweep, BOS/CHOCH, CRT) are all mandatory; a 13-point score must clear the OOS-validated threshold; the live proposal's real payout must clear the EV gate. Entries are 1–10m options; every trade is flat 0.5–1% of balance (never increases after a loss) under a daily loss lock, daily profit lock and consecutive-loss stop. <b>WHEN THERE IS NO CLEAR EDGE: NO TRADE.</b><br>
+    <b>How it works:</b> paginated 1m candles feed an ICT/SMC engine (1H/15m HTF bias · liquidity sweep · BOS/CHOCH · displacement · FVG/obstacle · CRT ref-candle · premium/discount · momentum/volume · regime + no-chase guards). Critical checks (HTF, sweep, BOS/CHOCH, CRT) are all mandatory; a 13-point score must clear the OOS-validated threshold; the live proposal's real payout must clear the EV gate. ICT entries are 1–10m options; the optional <b>Digits strategy</b> trades Even/Odd (your XML parity rule: anchor 10 ticks back + ≥6/10 agreement), Matches and Differs on 5-tick contracts from a last-1000-tick histogram — share floors plus the same real-payout EV gate. Every trade is flat 0.5–1% of balance (never increases after a loss) under a daily loss lock, daily profit lock and consecutive-loss stop. <b>WHEN THERE IS NO CLEAR EDGE: NO TRADE.</b><br>
     <b>Safety:</b> STOP never leaves new entries; balance &lt; $0.35 → DO NOT TRADE; token lives only in your browser — revoke it when finished. No profit claims: losses are unavoidable and this is a demo tool, not financial advice. Positive expectancy is only ever claimed from transparent recorded samples.
   </footer>
 </div>
@@ -201,6 +221,11 @@ const CONFIG = {
   strengthRatio: 0.3, streamWindow: 10, streamSamples: 90,
   weights: { trend: 0.25, strong: 0.20, eff: 0.20, tickmom: 0.15, range: 0.20 },
   maxSymbols: 24, chunkSize: 6, requestTimeoutMs: 15000,
+  parityWindow: 10,          // EvenOdd XML bot: agreement over the last 10 ticks
+  parityAnchor: 11,          // newest digit vs digit 10 ticks back (FROM_END 11)
+  parityMinAgree: 6,         // bot's >= 6 of 10 threshold
+  digitWindow: 1000,         // lastDigitList equivalent — match/diff share window
+  digitMinN: 200,            // match/diff need a real sample before any share counts
   entryScore: 90,
   minStake: 0.35, basePct: 0.02, capPct: 0.08,
   tpPct: 0.05, slPct: 0.05, smallFloor: 0.70
@@ -323,7 +348,7 @@ function normalizeActiveSymbols(list){
   for (const s of (list || [])){
     const symbol = s.symbol || s.underlying_symbol;
     if (!symbol) continue;
-    const pip = (s.pip != null ? s.pip : (s.pip_size != null ? s.pip_size : null));
+    const pip = (s.pip != null ? s.pip : (s.pip_size != null ? Math.pow(10, -s.pip_size) : null));
     out.push({
       symbol,
       displayName: s.display_name || s.underlying_symbol_name || symbol,
@@ -491,6 +516,120 @@ function momentumOf(c){
   // structure, so an entry INTO a retraced sweep zone still reads as with-trend
   const net = c[n-1].close - c[n-21].close;
   return { bull: net > 0, bear: net < 0, net };
+}
+/* ============ DIGIT SIGNALS (Even/Odd parity + Matches/Differs) ============ */
+function pipDecimals(pip){
+  if (!(pip > 0)) return null;
+  const d = Math.round(-Math.log10(pip));
+  return d >= 0 && d <= 10 ? d : null;
+}
+function lastDigitOf(p){
+  const s = String(p);
+  if (!s.length) return NaN;
+  const c = s.charCodeAt(s.length - 1);
+  return (c >= 48 && c <= 57) ? (c - 48) : NaN;
+}
+function digitFn(pip){
+  const dec = pipDecimals(pip);
+  return p => {
+    if (dec != null){
+      const n = Number(p);
+      if (!isFinite(n)) return NaN;
+      const s = n.toFixed(dec);
+      const c = s.charCodeAt(s.length - 1);
+      return (c >= 48 && c <= 57) ? (c - 48) : NaN;
+    }
+    return lastDigitOf(p);
+  };
+}
+/* mirrors the EvenOdd XML bot: anchor = newest parity == parity 10 ticks back,
+   agreement = >= 6 of the last 10 share the newest parity */
+function parityState(prices, pip, minAgree){
+  const out = { side: null, anchorOK: false, agree: 0, ready: false, note: "" };
+  if (!prices || prices.length < CONFIG.parityAnchor){ out.note = "need 11+ ticks"; return out; }
+  const digit = digitFn(pip);
+  const d1 = digit(prices[prices.length - 1]);
+  if (isNaN(d1)){ out.note = "no digit"; return out; }
+  const p1 = (d1 % 2 === 0);
+  const dA = digit(prices[prices.length - CONFIG.parityAnchor]);
+  if (isNaN(dA)){ out.note = "no digit"; return out; }
+  out.side = p1 ? "Even" : "Odd";
+  out.anchorOK = ((dA % 2 === 0) === p1);
+  let agree = 0;
+  for (let i = 0; i < CONFIG.parityWindow; i++){
+    const d = digit(prices[prices.length - 1 - i]);
+    if (!isNaN(d) && ((d % 2 === 0) === p1)) agree++;
+  }
+  out.agree = agree;
+  const need = minAgree > 0 ? minAgree : CONFIG.parityMinAgree;
+  out.ready = out.anchorOK && agree >= need;
+  if (!out.ready) out.note = !out.anchorOK ? "anchor mismatch" : "agree " + agree + "/" + need;
+  return out;
+}
+/* last-1000-ticks digit histogram (the XML bot's lastDigitList equivalent) */
+function digitStatsOf(prices, pip, window){
+  window = window || CONFIG.digitWindow;
+  const out = { n: 0, counts: [0,0,0,0,0,0,0,0,0,0], evenShare: 0, hot: null, cold: null };
+  if (!prices || !prices.length) return out;
+  const digit = digitFn(pip);
+  for (const p of prices.slice(-window)){
+    const d = digit(p);
+    if (isNaN(d)) continue;
+    out.n++; out.counts[d]++;
+  }
+  if (!out.n) return out;
+  out.evenShare = (out.counts[0] + out.counts[2] + out.counts[4] + out.counts[6] + out.counts[8]) / out.n;
+  let hi = -1, lo = Infinity;
+  for (let d = 0; d < 10; d++){
+    if (out.counts[d] > hi){ hi = out.counts[d]; out.hot = { digit: d, count: hi, share: hi / out.n }; }
+  }
+  for (let d = 0; d < 10; d++){
+    if (out.counts[d] < lo){ lo = out.counts[d]; out.cold = { digit: d, count: lo, share: lo / out.n }; }
+  }
+  return out;
+}
+/*
+ Digit strategy evaluation. cfg = { netEO, netMatch, netDiff, wrEO, evMin,
+ matchMinShare, diffMaxShare, minAgree }.
+ Nets are conservative scan-time estimates; the REAL proposal payout decides at
+ the live EV gate. Matches/Differs need digitMinN samples before any share counts.
+*/
+function evaluateDigits(ticks, pip, cfg){
+  cfg = cfg || {};
+  const netEO = cfg.netEO != null ? cfg.netEO : 0.95;
+  const netM = cfg.netMatch != null ? cfg.netMatch : 8.5;
+  const netD = cfg.netDiff != null ? cfg.netDiff : 0.10;
+  const wrEO = cfg.wrEO != null ? cfg.wrEO : 0.55;
+  const evMin = cfg.evMin != null ? cfg.evMin : 0.02;
+  const mShare = cfg.matchMinShare != null ? cfg.matchMinShare : 0.115;
+  const dShare = cfg.diffMaxShare != null ? cfg.diffMaxShare : 0.085;
+  const parity = parityState(ticks, pip, cfg.minAgree);
+  const stats = digitStatsOf(ticks, pip);
+  const out = { parity, stats, signals: [] };
+  if (parity.ready){
+    const ev = wrEO * netEO - (1 - wrEO);
+    out.signals.push({ strategy: "digits", kind: "parity",
+      contract: parity.side === "Even" ? "DIGITEVEN" : "DIGITODD",
+      side: parity.side, short: parity.side, label: "parity " + parity.side,
+      wr: wrEO, ev: round2(ev * 1000) / 1000, eligible: ev >= evMin });
+  }
+  if (stats.n >= CONFIG.digitMinN && stats.hot && stats.hot.share >= mShare){
+    const wr = stats.hot.share;
+    const ev = wr * netM - (1 - wr);
+    out.signals.push({ strategy: "digits", kind: "match", contract: "DIGITMATCH",
+      digit: stats.hot.digit, side: "Matches " + stats.hot.digit, short: "M" + stats.hot.digit,
+      label: "match " + stats.hot.digit + " (" + (wr * 100).toFixed(1) + "%)",
+      wr: round2(wr * 1000) / 1000, ev: round2(ev * 1000) / 1000, eligible: ev >= evMin });
+  }
+  if (stats.n >= CONFIG.digitMinN && stats.cold && stats.cold.share <= dShare){
+    const wr = 1 - stats.cold.share;
+    const ev = wr * netD - (1 - wr);
+    out.signals.push({ strategy: "digits", kind: "diff", contract: "DIGITDIFF",
+      digit: stats.cold.digit, side: "Differs " + stats.cold.digit, short: "D" + stats.cold.digit,
+      label: "differs " + stats.cold.digit + " (" + ((1 - stats.cold.share) * 100).toFixed(1) + "%)",
+      wr: round2(wr * 1000) / 1000, ev: round2(ev * 1000) / 1000, eligible: ev >= evMin });
+  }
+  return out;
 }
 /* HTF bias: 1h structure + 15m structure must agree */
 function htfBiasOf(c1h, c15m){
@@ -726,6 +865,7 @@ function backtestRun(o){
 if (typeof window !== "undefined"){
   const _eng = { atrOf, swingsOf, structureOf, dealingRange, zoneAt, lastFVG, displacementAt,
     sweepNear, crtOf, regimeOf, chaseBlock, momentumOf, htfBiasOf, evaluateICT,
+    pipDecimals, lastDigitOf, parityState, digitStatsOf, evaluateDigits,
     MIN_STAKE, riskInit, stakeFor, riskClock, riskCanTrade, riskOnResult, riskResume,
     agg1m, metricsOf, splitChrono, sweepThreshold, monteCarlo, backtestRun };
   window.CORE_R = Object.assign({ CONFIG, round2, sign, computeMetrics, botReadyState, percentileRanks, rankRows,
@@ -734,6 +874,7 @@ if (typeof window !== "undefined"){
 if (typeof module !== "undefined" && module.exports){
   const _eng = { atrOf, swingsOf, structureOf, dealingRange, zoneAt, lastFVG, displacementAt,
     sweepNear, crtOf, regimeOf, chaseBlock, momentumOf, htfBiasOf, evaluateICT,
+    pipDecimals, lastDigitOf, parityState, digitStatsOf, evaluateDigits,
     MIN_STAKE, riskInit, stakeFor, riskClock, riskCanTrade, riskOnResult, riskResume,
     agg1m, metricsOf, splitChrono, sweepThreshold, monteCarlo, backtestRun };
   module.exports = Object.assign({ CONFIG, round2, sign, computeMetrics, botReadyState, percentileRanks, rankRows,
@@ -752,6 +893,7 @@ if (typeof module !== "undefined" && module.exports){
     sweepTimer: null, ping: null, aping: null,
     risk: null, symbols: [], rows: [],
     hist: new Map(), nextHist: new Map(), histFail: new Map(), reconnAt: 0,
+    ticks: new Map(), nextTicks: new Map(), tickFail: new Map(),
     inTrade: false, current: null, cooldownUntil: 0,
     trades: 0, wins: 0, started: false,
     calib: { threshold: 11, wrEstimate: 0.55, evMin: 0.02, source: "default" },
@@ -903,6 +1045,14 @@ if (typeof module !== "undefined" && module.exports){
     }
     return (state.hist.get(sym) || []).length;
   }
+  /* latest 1000 ticks — digit strategies (parity + histogram) */
+  async function loadTicks(sym){
+    const r = await wsSend(state.pub, { ticks_history: sym, style: "ticks", count: 1000 });
+    const prices = (r.history && r.history.prices) || [];
+    if (!prices.length) throw new Error("no ticks");
+    state.ticks.set(sym, prices.slice(-1000));
+    return prices.length;
+  }
   function mtfFrom(c1){
     return {
       c1: c1.slice(-80),
@@ -915,33 +1065,64 @@ if (typeof module !== "undefined" && module.exports){
 
   function renderRows(){
     const rows = state.rows;
+    const strat = readStrategy();
     let html = "<table><thead><tr><th>#</th><th>Market</th><th>Score</th><th>Side</th><th>Regime</th><th>Checks</th><th>Status</th></tr></thead><tbody>";
     if (!rows.length){
       html += '<tr><td colspan="7" style="color:#8b949e;text-align:center;padding:20px">Scanning…</td></tr>';
     }
+    const dot = v => v ? '<span style="color:#3fb950">●</span>' : '<span style="color:#484f58">○</span>';
     rows.forEach((r, i) => {
       const base = "<td><b>" + esc(r.displayName) + "</b><br><span style='color:#8b949e;font-size:11px'>" + esc(r.symbol) + "</span></td>";
       if (r.pending){
         html += "<tr><td>" + (i + 1) + "</td>" + base +
-          '<td colspan="5" style="color:#8b949e">loading history…</td></tr>';
+          '<td colspan="5" style="color:#8b949e">' + (strat === "ict" ? "loading history…" : "loading data…") + "</td></tr>";
         return;
       }
-      const c = r.checks || {};
-      const dot = v => v ? '<span style="color:#3fb950">●</span>' : '<span style="color:#484f58">○</span>';
-      const chk = [c.htf, c.sweep, c.bosChoch, c.crt].map(dot).join(" ") +
-        ' <span style="color:#484f58">|</span> ' + [c.fvgOb, c.displacement, c.momentum, c.volatility, c.payout].map(dot).join(" ");
       const busy = state.inTrade && state.current && state.current.sig && state.current.sig.symbol === r.symbol;
       let st = "watch";
       let cls = "";
       if (busy){ st = "IN TRADE"; cls = ' class="qual"'; }
-      else if (r.eligible && state.mode === "armed" && !state.inTrade) st = "✓ QUALIFIED";
-      else if (r.eligible) st = state.mode === "armed" ? (Date.now() < state.cooldownUntil ? "cooldown" : "waits turn") : "qualified (disarmed)";
-      else if ((r.blocked || []).length && (r.score || 0) >= Math.max(4, state.calib.threshold - 3))
-        st = "near: " + r.blocked.slice(0, 2).join(", ");
-      else if (r.blocked && r.blocked.length) st = r.blocked[0];
+      // ---------- digits view ----------
+      if (strat === "digits" && r.dig){
+        const d = r.dig;
+        const mOK = d.signals.some(x => x.kind === "match" && x.eligible);
+        const dOK = d.signals.some(x => x.kind === "diff" && x.eligible);
+        const anyOK = d.signals.some(x => x.eligible);
+        const chk = [d.parity.ready, mOK, dOK, anyOK].map(dot).join(" ");
+        if (!busy){
+          if (r.activeSig){ st = "✓ QUALIFIED (" + r.activeSig.short + ")"; cls = ' class="qual"'; }
+          else if (d.signals.length) st = "EV gate: " + d.signals.map(x => x.short).join("/");
+          else if (d.stats.n < 200) st = "small sample (n=" + d.stats.n + ")";
+          else st = "watch: " + (d.parity.note || "no edge");
+        }
+        html += "<tr" + cls + "><td>" + (i + 1) + "</td>" + base +
+          "<td><b>" + (d.parity.ready ? d.parity.agree + "/10" : "–") + "</b></td>" +
+          "<td>" + (r.activeSig ? '<span class="chip ready">' + esc(r.activeSig.short) + "</span>" : '<span class="chip no">–</span>') + "</td>" +
+          "<td style='font-size:11px'>" + (d.stats.n ? "e" + Math.round(d.stats.evenShare * 100) + "% · n" + d.stats.n : "–") + "</td>" +
+          "<td style='font-size:13px;letter-spacing:2px'>" + chk + "</td>" +
+          "<td>" + st + "</td></tr>";
+        return;
+      }
+      // ---------- ICT view (unchanged shape; digit signals overlay in "both") ----------
+      const c = r.checks || {};
+      const chk = [c.htf, c.sweep, c.bosChoch, c.crt].map(dot).join(" ") +
+        ' <span style="color:#484f58">|</span> ' + [c.fvgOb, c.displacement, c.momentum, c.volatility, c.payout].map(dot).join(" ");
+      const digOverlay = strat === "both" && r.activeSig && r.activeSig.strategy === "digits";
+      if (!busy){
+        if (digOverlay){ st = "✓ QUALIFIED (" + r.activeSig.short + ")"; cls = ' class="qual"'; }
+        else if (r.eligible && state.mode === "armed" && !state.inTrade) st = "✓ QUALIFIED";
+        else if (r.eligible) st = state.mode === "armed" ? (Date.now() < state.cooldownUntil ? "cooldown" : "waits turn") : "qualified (disarmed)";
+        else if ((r.blocked || []).length && (r.score || 0) >= Math.max(4, state.calib.threshold - 3))
+          st = "near: " + r.blocked.slice(0, 2).join(", ");
+        else if (r.blocked && r.blocked.length) st = r.blocked[0];
+        else if (r.dig && r.dig.signals.length && strat === "both") st = "EV gate: " + r.dig.signals.map(x => x.short).join("/");
+      }
+      const sideChip = (digOverlay || (r.activeSig && r.activeSig.strategy === "digits"))
+        ? '<span class="chip ready">' + esc(r.activeSig.short) + "</span>"
+        : (r.side ? '<span class="chip ' + (r.eligible ? "ready" : "part") + '">' + r.side + "</span>" : '<span class="chip no">–</span>');
       html += "<tr" + cls + "><td>" + (i + 1) + "</td>" + base +
         "<td><b>" + (r.score != null ? r.score : "–") + "</b>/13</td>" +
-        "<td>" + (r.side ? '<span class="chip ' + (r.eligible ? "ready" : "part") + '">' + r.side + "</span>" : '<span class="chip no">–</span>') + "</td>" +
+        "<td>" + sideChip + "</td>" +
         "<td style='font-size:11px'>" + esc((r.regime && r.regime.type) || "–") + "</td>" +
         "<td style='font-size:13px;letter-spacing:2px'>" + chk + "</td>" +
         "<td>" + st + "</td></tr>";
@@ -951,71 +1132,136 @@ if (typeof module !== "undefined" && module.exports){
   }
   function esc(s){ return String(s).replace(/[&<>\"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c])); }
 
+  /* best qualifying signal for the active strategy (EV decides between engines) */
+  function pickActive(row, strat){
+    const ictSig = (row.eligible && row.side && strat !== "digits")
+      ? { strategy: "ict", side: row.side, short: row.side, score: row.score,
+          ev: row.ev, regime: row.regime, checks: row.checks, expiry: row.expiry }
+      : null;
+    let digSig = null;
+    if (strat !== "ict" && row.dig){
+      const el = row.dig.signals.filter(x => x.eligible);
+      if (el.length) digSig = el.slice().sort((a, b) => (b.ev || 0) - (a.ev || 0))[0];
+    }
+    if (strat === "ict") return ictSig;
+    if (strat === "digits") return digSig;
+    if (ictSig && digSig) return (digSig.ev > ictSig.ev) ? digSig : ictSig;
+    return ictSig || digSig;
+  }
+
   async function sweep(){
     if (state.sweeping) return;
     state.sweeping = true;
     try {
       if (!state.pub || state.pub.readyState !== 1) throw new Error("socket not open");
       const now = Date.now();
-      const stale = state.symbols.filter(s => !state.hist.has(s.symbol) || (state.nextHist.get(s.symbol) || 0) < now);
+      const strat = readStrategy();
+      const wantCandles = strat !== "digits";
+      const wantTicks = strat !== "ict";
+      const stale = state.symbols.filter(s => {
+        const cDue = wantCandles && (!state.hist.has(s.symbol) || (state.nextHist.get(s.symbol) || 0) < now);
+        const tDue = wantTicks && (!state.ticks.has(s.symbol) || (state.nextTicks.get(s.symbol) || 0) < now);
+        return cDue || tDue;
+      });
       if (stale.length){
-        const fails = [];
+        const hFails = [], tFails = [];
         let sockDead = false, allTimeout = 0;
         // max 2 symbols in flight — a 13×4 parallel burst starves the socket (every request timed out live)
         for (let i = 0; i < stale.length; i += 2){
           await Promise.all(stale.slice(i, i + 2).map(async s => {
-            try {
-              const have = state.hist.get(s.symbol) || [];
-              const newest = have.length ? have[have.length - 1].epoch : 0;
-              // full 4-page load only when cold or gap >30m; routine refresh = 1 top-up page
-              const cold = !have.length || (Date.now() / 1000 - newest) > 1800;
-              await loadHistory(s.symbol, cold ? 4 : 1);
-              state.nextHist.set(s.symbol, Date.now() + 90000);
-              state.histFail.delete(s.symbol);
-            } catch (e){
-              const n = (state.histFail.get(s.symbol) || 0) + 1;
-              state.histFail.set(s.symbol, n);
-              // escalating backoff: a failing symbol must NOT retry every 2.5s sweep
-              state.nextHist.set(s.symbol, Date.now() + Math.min(120000, 15000 * n));
-              fails.push(s.symbol);
-              if (/socket not open/i.test(e.message)) sockDead = true;
-              else if (/timeout/i.test(e.message)) allTimeout++;
+            const sym = s.symbol;
+            const dueC = wantCandles && (!state.hist.has(sym) || (state.nextHist.get(sym) || 0) < now);
+            const dueT = wantTicks && (!state.ticks.has(sym) || (state.nextTicks.get(sym) || 0) < now);
+            if (dueC){
+              try {
+                const have = state.hist.get(sym) || [];
+                const newest = have.length ? have[have.length - 1].epoch : 0;
+                // full 4-page load only when cold or gap >30m; routine refresh = 1 top-up page
+                const cold = !have.length || (Date.now() / 1000 - newest) > 1800;
+                await loadHistory(sym, cold ? 4 : 1);
+                state.nextHist.set(sym, Date.now() + 90000);
+                state.histFail.delete(sym);
+              } catch (e){
+                const n = (state.histFail.get(sym) || 0) + 1;
+                state.histFail.set(sym, n);
+                // escalating backoff: a failing symbol must NOT retry every 2.5s sweep
+                state.nextHist.set(sym, Date.now() + Math.min(120000, 15000 * n));
+                hFails.push(sym);
+                if (/socket not open/i.test(e.message)) sockDead = true;
+                else if (/timeout/i.test(e.message)) allTimeout++;
+              }
+            }
+            if (dueT){
+              try {
+                await loadTicks(sym);
+                state.nextTicks.set(sym, Date.now() + 10000);  // digit signals need fresh ticks
+                state.tickFail.delete(sym);
+              } catch (e){
+                const n = (state.tickFail.get(sym) || 0) + 1;
+                state.tickFail.set(sym, n);
+                state.nextTicks.set(sym, Date.now() + Math.min(60000, 15000 * n));
+                tFails.push(sym);
+                if (/socket not open/i.test(e.message)) sockDead = true;
+                else if (/timeout/i.test(e.message)) allTimeout++;
+              }
             }
           }));
         }
-        if (fails.length){
-          log("History deferred: " + fails.length + "/" + stale.length +
-              " symbol(s) failed — backoff active (" + fails.slice(0, 4).join(", ") +
-              (fails.length > 4 ? ", …" : "") + ")", "w");
+        if (hFails.length){
+          log("History deferred: " + hFails.length + "/" + stale.length +
+              " symbol(s) failed — backoff active (" + hFails.slice(0, 4).join(", ") +
+              (hFails.length > 4 ? ", …" : "") + ")", "w");
+        }
+        if (tFails.length){
+          log("Ticks deferred: " + tFails.length + "/" + stale.length +
+              " symbol(s) failed — backoff active (" + tFails.slice(0, 4).join(", ") +
+              (tFails.length > 4 ? ", …" : "") + ")", "w");
         }
         // self-heal: if EVERY request timed out or the socket is closed, reconnect once (throttled 60s)
         if ((sockDead || (allTimeout === stale.length && stale.length >= 2)) &&
             Date.now() - state.reconnAt > 60000){
           state.reconnAt = Date.now();
           state.histFail.clear();
-          stale.forEach(s => state.nextHist.delete(s.symbol));  // fresh socket → retry promptly
+          state.tickFail.clear();
+          stale.forEach(s => { state.nextHist.delete(s.symbol); state.nextTicks.delete(s.symbol); });  // fresh socket → retry promptly
           tryReconnect();
         }
       }
       const rows = [];
       const nowSec = Math.floor(Date.now() / 1000);
+      const digCfg = wantTicks ? {
+        evMin: state.calib.evMin, wrEO: state.calib.wrEstimate,
+        minAgree: readDigCfg().minAgree, matchMinShare: readDigCfg().matchMinShare,
+        diffMaxShare: readDigCfg().diffMaxShare } : null;
       for (const s of state.symbols){
-        const cAll = state.hist.get(s.symbol);
-        // decisions run on CLOSED bars only — drop the forming candle
-        const c = cAll ? cAll.filter(b => b.epoch + 60 <= nowSec) : null;
-        if (!c || c.length < 500){
-          rows.push({ symbol: s.symbol, displayName: s.displayName, pending: true });
-          continue;
+        const row = { symbol: s.symbol, displayName: s.displayName, pip: s.pip };
+        let haveAny = false;
+        if (wantCandles){
+          const cAll = state.hist.get(s.symbol);
+          // decisions run on CLOSED bars only — drop the forming candle
+          const c = cAll ? cAll.filter(b => b.epoch + 60 <= nowSec) : null;
+          if (c && c.length >= 500){
+            const ev = window.CORE_R.evaluateICT(mtfFrom(c), payoutNetOf(s.symbol), {
+              threshold: state.calib.threshold, evMin: state.calib.evMin, wrEstimate: state.calib.wrEstimate });
+            Object.assign(row, { score: ev.score, side: ev.side, checks: ev.checks, blocked: ev.blocked,
+              eligible: ev.eligible, regime: ev.regime, ev: ev.ev, expiry: profileOf(s.symbol).expiry });
+            haveAny = true;
+          }
         }
-        const ev = window.CORE_R.evaluateICT(mtfFrom(c), payoutNetOf(s.symbol), {
-          threshold: state.calib.threshold, evMin: state.calib.evMin, wrEstimate: state.calib.wrEstimate });
-        rows.push({ symbol: s.symbol, displayName: s.displayName, score: ev.score, side: ev.side,
-          checks: ev.checks, blocked: ev.blocked, eligible: ev.eligible, regime: ev.regime,
-          ev: ev.ev, expiry: profileOf(s.symbol).expiry });
+        if (wantTicks){
+          const t = state.ticks.get(s.symbol);
+          if (t && t.length >= 11){
+            row.dig = window.CORE_R.evaluateDigits(t, s.pip, digCfg);
+            haveAny = true;
+          }
+        }
+        row.activeSig = pickActive(row, strat);
+        row.pending = !haveAny;
+        rows.push(row);
       }
       state.rows = rows;
       renderRows();
-      const nEl = rows.filter(r => r.eligible).length;
+      const nEl = rows.filter(r => r.activeSig).length;
       setStatus("Scanning… " + rows.length + " markets · " + nEl + " qualified · updated " +
         new Date().toLocaleTimeString(), "ok");
       await maybeTrade();
@@ -1203,6 +1449,19 @@ if (typeof module !== "undefined" && module.exports){
       smallMaxPct: 2
     };
   }
+  function readStrategy(){
+    const v = $("selStrategy") ? String($("selStrategy").value || "") : "";
+    return (v === "digits" || v === "both") ? v : "ict";
+  }
+  function readDigCfg(){
+    const n = (id, d) => { const v = Number($(id) ? $(id).value : null); return isFinite(v) && v > 0 ? v : d; };
+    return {
+      ticks: Math.min(10, Math.max(1, Math.round(n("inpDigTicks", 5)))),
+      minAgree: Math.min(10, Math.max(5, Math.round(n("inpDigAgree", 6)))),
+      matchMinShare: n("inpDigMatch", 11.5) / 100,
+      diffMaxShare: n("inpDigDiff", 8.5) / 100
+    };
+  }
   function saveRisk(){
     try { localStorage.setItem("dr_robot_risk", JSON.stringify(state.risk || null)); } catch(e){}
   }
@@ -1253,21 +1512,36 @@ if (typeof module !== "undefined" && module.exports){
       }
       state._lastSkip = null;
     }
-    // ---- trade-quality gate: engine eligible only, best score first ----
+    // ---- trade-quality gate: active strategy's eligible signal (score order for ICT, EV otherwise) ----
+    const strat = readStrategy();
     const elig = (state.rows || [])
-      .filter(r => r.eligible && profileOf(r.symbol).on)
-      .sort((a, b) => (b.score || 0) - (a.score || 0));
+      .filter(r => r.activeSig && profileOf(r.symbol).on)
+      .sort((a, b) => strat === "ict"
+        ? (b.score || 0) - (a.score || 0)
+        : ((b.activeSig.ev || 0) - (a.activeSig.ev || 0)) || (b.score || 0) - (a.score || 0));
     if (!elig.length) return;
-    const sig = elig[0];
+    const row0 = elig[0];
+    const as = row0.activeSig;
+    const sig = as.strategy === "digits"
+      ? { strategy: "digits", symbol: row0.symbol, displayName: row0.displayName,
+          kind: as.kind, contract: as.contract, digit: as.digit, side: as.side, short: as.short,
+          label: as.label, wr: as.wr, ev: as.ev, ticks: readDigCfg().ticks }
+      : { strategy: "ict", symbol: row0.symbol, displayName: row0.displayName,
+          side: row0.side, score: row0.score, ev: row0.ev, regime: row0.regime,
+          checks: row0.checks, expiry: row0.expiry };
     const sf = window.CORE_R.stakeFor(state.lastBal, state.risk);
     if (!sf.ok){
       log("⛔ " + sf.reason, "e"); setMode("scanning");
       banner("<b>⛔ " + sf.reason + "</b> Small-account survival mode: no trade.");
       return;
     }
-    log("📈 SETUP: " + sig.displayName + " (" + sig.symbol + ") " + sig.side +
-        " · score " + sig.score + "/13 · " + sig.regime.type + " · EV≈" + (sig.ev != null ? sig.ev.toFixed(3) : "—") +
-        " → stake $" + sf.stake.toFixed(2) + " (" + sig.expiry + "m)", "s");
+    log("📈 SETUP: " + sig.displayName + " (" + sig.symbol + ") " +
+        (sig.strategy === "digits"
+          ? sig.label + " · EV≈" + (sig.ev != null ? sig.ev.toFixed(3) : "—") +
+            " → stake $" + sf.stake.toFixed(2) + " (" + sig.ticks + "t)"
+          : sig.side + " · score " + sig.score + "/13 · " + sig.regime.type +
+            " · EV≈" + (sig.ev != null ? sig.ev.toFixed(3) : "—") +
+            " → stake $" + sf.stake.toFixed(2) + " (" + sig.expiry + "m)"), "s");
     state.inTrade = true; state.current = { sig, stake: sf.stake, phase: "proposing" };
     setMode("intrade");
     try { await proposeAndBuy(sig, sf.stake); }
@@ -1280,16 +1554,19 @@ if (typeof module !== "undefined" && module.exports){
   }
 
   async function proposeAndBuy(sig, stake){
-    const p = await wsSend(state.auth, {
+    const isDig = sig.strategy === "digits";
+    const req = {
       proposal: 1,
       amount: stake.toFixed(2),
       basis: "stake",
-      contract_type: sig.side,
+      contract_type: isDig ? sig.contract : sig.side,
       currency: state.currency || "USD",
-      duration: Number(profileOf(sig.symbol).expiry) || 1,
-      duration_unit: "m",
+      duration: isDig ? sig.ticks : Number(profileOf(sig.symbol).expiry) || 1,
+      duration_unit: isDig ? "t" : "m",
       underlying_symbol: sig.symbol
-    }, 12000);
+    };
+    if (isDig && (sig.kind === "match" || sig.kind === "diff")) req.barrier = String(sig.digit);
+    const p = await wsSend(state.auth, req, 12000);
     const prop = deepFind(p, "proposal") || p;
     const price = prop.ask_price != null ? prop.ask_price : prop.price;
     const buyTok = prop.id != null ? prop.id : (prop.token != null ? prop.token : null);
@@ -1298,7 +1575,7 @@ if (typeof module !== "undefined" && module.exports){
     // ---- payout/EV gate on the REAL proposal (before buy) ----
     if (prop.payout != null && price > 0){
       const net = Number(prop.payout) / Number(price) - 1;
-      const wr = state.calib.wrEstimate;
+      const wr = sig.wr != null ? sig.wr : state.calib.wrEstimate;
       const ev = wr * net - (1 - wr);
       state.current.proposalNet = round2(net * 1000) / 1000;
       if (ev < state.calib.evMin){
@@ -1309,9 +1586,11 @@ if (typeof module !== "undefined" && module.exports){
         state.cooldownUntil = Date.now() + 5000;
         return;
       }
-      const prof = profileOf(sig.symbol);
-      prof.payoutNet = round2(net * 1000) / 1000;   // remember measured payout for scans
-      state.profiles[sig.symbol] = prof; savePrefs();
+      if (!isDig){   // digit payouts differ per contract type — never pollute the ICT profile
+        const prof = profileOf(sig.symbol);
+        prof.payoutNet = round2(net * 1000) / 1000;   // remember measured payout for scans
+        state.profiles[sig.symbol] = prof; savePrefs();
+      }
     }
     log("Proposal ok — price " + price + (prop.payout ? " · payout " + prop.payout : ""), "i");
     const b = await wsSend(state.auth, { buy: buyTok, price: String(price) }, 12000);
@@ -1409,8 +1688,11 @@ if (typeof module !== "undefined" && module.exports){
     const s = cur.sig;
     const entry = {
       t: Date.now(), symbol: s.symbol, name: s.displayName, side: s.side, score: s.score,
-      regime: (s.regime && s.regime.type) || "?", checks: s.checks || {}, ev: s.ev,
-      net: cur.proposalNet || null, stake: cur.stake, expiry: s.expiry, won: !!won, pnl: pnl
+      st: s.strategy || "ict", ct: s.contract || null, dig: (s.kind && s.kind !== "parity") ? s.digit : null,
+      regime: s.strategy === "digits" ? "digits" : ((s.regime && s.regime.type) || "?"),
+      checks: s.checks || {}, ev: s.ev,
+      net: cur.proposalNet || null, stake: cur.stake,
+      expiry: s.strategy === "digits" ? (s.ticks + "t") : s.expiry, won: !!won, pnl: pnl
     };
     state.tradeLog.push(entry);
     if (state.tradeLog.length > 300) state.tradeLog = state.tradeLog.slice(-300);
@@ -1481,8 +1763,13 @@ if (typeof module !== "undefined" && module.exports){
       saveRisk();
       setMode("armed");
       banner("");
-      log("🤖 ARMED — flat " + readRiskCfg().riskPct + "%/trade, will buy the first setup scoring ≥" +
-          state.calib.threshold + " with all critical checks green.", "s");
+      const stratA = readStrategy();
+      log("🤖 ARMED — flat " + readRiskCfg().riskPct + "%/trade, " +
+          (stratA === "digits"
+            ? "digit signals (parity ≥" + readDigCfg().minAgree + "/10 + match/diff shares) gated by the real-payout EV."
+            : stratA === "both"
+              ? "ICT ≥" + state.calib.threshold + " or digit signals — best EV wins, under the real-payout EV gate."
+              : "will buy the first setup scoring ≥" + state.calib.threshold + " with all critical checks green."), "s");
       setStatus("ARMED — trading " + $("selAcct").value + " on first qualified setup.", "ok");
       await maybeTrade();
     } catch (e){
@@ -1699,7 +1986,11 @@ if (typeof module !== "undefined" && module.exports){
       html += '<div class="lrow"><b>By regime:</b> ' + Object.keys(byRegime).map(r => r + " → " + wrOf(byRegime[r])).join(" · ") + "</div>";
       const byExp = {};
       all.forEach(t => { (byExp[t.expiry] = byExp[t.expiry] || []).push(t); });
-      html += '<div class="lrow"><b>By expiry:</b> ' + Object.keys(byExp).map(e => e + "m → " + wrOf(byExp[e])).join(" · ") + "</div>";
+      const expLbl = e => (e != null && String(e).indexOf("t") >= 0) ? String(e) : e + "m";
+      html += '<div class="lrow"><b>By expiry:</b> ' + Object.keys(byExp).map(e => expLbl(e) + " → " + wrOf(byExp[e])).join(" · ") + "</div>";
+      const byStrat = {};
+      all.forEach(t => { const k = t.st || "ict"; (byStrat[k] = byStrat[k] || []).push(t); });
+      html += '<div class="lrow"><b>By strategy:</b> ' + Object.keys(byStrat).map(k => k + " → " + wrOf(byStrat[k])).join(" · ") + "</div>";
       const m = window.CORE_R.metricsOf(all, all[all.length - 1].net || 0.886, state.lastBal || 1000);
       if (m) html += '<div class="lrow"><b>Whole log:</b> WR ' + (m.wr * 100).toFixed(1) + "% · EV " + m.ev.toFixed(3) +
         " · PF " + m.pf.toFixed(2) + " · break-even needed " + (m.breakeven * 100).toFixed(1) + "% · edge " +
@@ -1712,8 +2003,12 @@ if (typeof module !== "undefined" && module.exports){
     html += '<table><thead><tr><th>#</th><th>Time</th><th>Market</th><th>Side</th><th>Score</th><th>Regime</th><th>Expiry</th><th>Stake</th><th>Net%</th><th>Result</th></tr></thead><tbody>';
     all.slice(-100).reverse().forEach((t, i) => {
       html += "<tr" + (t.won ? ' style="color:#3fb950"' : ' style="color:#f85149"') + "><td>" + (all.length - i) +
-        "</td><td>" + new Date(t.t).toLocaleString() + "</td><td>" + esc(t.name) + "</td><td>" + t.side +
-        "</td><td>" + t.score + "/13</td><td>" + esc(t.regime) + "</td><td>" + t.expiry + "m</td><td>$" +
+        "</td><td>" + new Date(t.t).toLocaleString() + "</td><td>" + esc(t.name) + "</td><td>" + esc(String(t.side || "—")) +
+        "</td><td>" + (t.st === "digits"
+          ? (t.dig != null ? "d" + t.dig : "—")
+          : (t.score != null ? t.score + "/13" : "—")) +
+        "</td><td>" + esc(t.regime) + "</td><td>" +
+        (t.expiry != null ? (String(t.expiry).indexOf("t") >= 0 ? t.expiry : t.expiry + "m") : "—") + "</td><td>$" +
         (t.stake || 0).toFixed(2) + "</td><td>" + (t.net != null ? Math.round(t.net * 100) + "%" : "—") +
         "</td><td>" + (t.won ? "WIN +" : "LOSS −") + "$" + Math.abs(t.pnl).toFixed(2) + "</td></tr>";
     });
