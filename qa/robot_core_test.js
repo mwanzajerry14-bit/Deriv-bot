@@ -1,4 +1,6 @@
-/** Unit tests for Trend_Robot.html core (extracted, no DOM/network). */
+/** Unit tests for Trend_Robot.html core (extracted, no DOM/network).
+ *  Legacy martingale/pickSignal code was REMOVED per redesign brief §12 —
+ *  this suite now asserts their absence plus surviving shared helpers. */
 const fs = require("fs");
 const path = require("path");
 
@@ -13,110 +15,16 @@ function check(label, cond, detail) {
   if (!cond) failures++;
   console.log((cond ? "OK   " : "FAIL ") + label + (cond ? "" : " -> " + detail));
 }
-const r2 = x => Math.round((x + Number.EPSILON) * 100) / 100;
 
-// ---------- money math: $2 account (the hard case) ----------
-{
-  const m = C.moneyInit(2);
-  check("$2: base 0.35 (min-stake floor)", m.base === 0.35, m.base);
-  check("$2: cap 0.70 (small-floor beats 8%)", m.cap === 0.70, m.cap);
-  check("$2: tp 0.10", m.tp === 0.1, m.tp);
-  check("$2: sl 0.70 (floor beats 5%)", m.sl === 0.7, m.sl);
-  check("$2: first stake 0.35", m.stake === 0.35, m.stake);
+// ---------- martingale + legacy signal path REMOVED (brief §12) ----------
+check("moneyInit removed (no martingale)", typeof C.moneyInit === "undefined");
+check("moneyOnLose removed", typeof C.moneyOnLose === "undefined");
+check("moneyOnWin removed", typeof C.moneyOnWin === "undefined");
+check("pickSignal removed (ICT engine supersedes)", typeof C.pickSignal === "undefined");
+check("entryThreshold removed (OOS-calibrated threshold supersedes)", typeof C.entryThreshold === "undefined");
+check("flat-risk module present", typeof C.stakeFor === "function" && typeof C.riskOnResult === "function");
 
-  C.moneyOnLose(m);
-  check("$2: after loss1 stake 0.70 (doubling works)", m.stake === 0.7, m.stake);
-  C.moneyOnLose(m);
-  check("$2: after loss2 capped at 0.70", m.stake === 0.7 && m.streak === 2, JSON.stringify(m));
-
-  C.moneyOnWin(m, 1.30);
-  check("$2: win resets to 0.35 from live balance", m.stake === 0.35 && m.streak === 0, JSON.stringify(m));
-}
-
-// ---------- money math: $1,000 account (unchanged classic behavior) ----------
-{
-  const m = C.moneyInit(1000);
-  check("$1000: base 20, cap 80, tp 50, sl 50 (SL now5%)",
-    m.base === 20 && m.cap === 80 && m.tp === 50 && m.sl === 50, JSON.stringify(m));
-  C.moneyOnLose(m); C.moneyOnLose(m);
-  check("$1000: 20 -> 40 -> 80", m.stake === 80, m.stake);
-  C.moneyOnLose(m);
-  check("$1000: stays capped at 80", m.stake === 80, m.stake);
-}
-
-// ---------- guards ----------
-{
-  check("isBroke(0.34) true", C.isBroke(0.34) === true);
-  check("isBroke(0.35) false", C.isBroke(0.35) === false);
-
-  const m = C.moneyInit(2);
-  C.moneyShrink(m, 0.50); // stake 0.35 -> affordable but 0.35 <= 0.50: no change
-  check("shrink: no change when stake <= balance", m.stake === 0.35, m.stake);
-  m.stake = 0.70;
-  C.moneyShrink(m, 0.50);
-  check("shrink: 0.70 stake with $0.50 balance -> 0.50", m.stake === 0.5, m.stake);
-  m.stake = 0.70;
-  C.moneyShrink(m, 0.20);
-  check("shrink: never below min stake (0.20 < 0.35 -> unchanged)", m.stake === 0.7, m.stake);
-
-  const s = C.moneyInit(2);
-  check("tpHit at P/L +0.15", C.tpHit(s, 2.15) === true, C.sessionPl(s, 2.15));
-  check("tpHit false at P/L +0.05", C.tpHit(s, 2.05) === false);
-  check("slHit at P/L −0.70", C.slHit(s, 1.30) === true, C.sessionPl(s, 1.30));
-  check("slHit false at P/L −0.69", C.slHit(s, 1.31) === false);
-  check("sessionPl rounds to cents", C.sessionPl(s, 2.007) === 0.01, C.sessionPl(s, 2.007));
-}
-
-// ---------- pickSignal: 4/4 AND score >= entry threshold (default 90) ----------
-{
-  const mk = (sym, passed, side, score) => ({
-    symbol: sym, displayName: sym, score,
-    ready: { side: passed ? side : (side || null), passed, checks: [] }
-  });
-  check("entry threshold default = 90", C.CONFIG.entryScore === 90, C.CONFIG.entryScore);
-  check("no rows -> null", C.pickSignal([]) === null);
-  check("no 4/4 -> null", C.pickSignal([mk("A", 3, "CALL", 90), mk("B", 2, "PUT", 80)]) === null);
-
-  check("4/4 score 89.9 -> REJECTED (below 90)",
-    C.pickSignal([mk("A", 4, "CALL", 89.9)]) === null, JSON.stringify(C.pickSignal([mk("A", 4, "CALL", 89.9)])));
-  check("4/4 score 90 -> taken (boundary)",
-    (() => { const s = C.pickSignal([mk("A", 4, "CALL", 90)]); return s && s.symbol === "A"; })(),
-    JSON.stringify(C.pickSignal([mk("A", 4, "CALL", 90)])));
-  check("empty input falls back to 90, not 0",
-    C.pickSignal([mk("A", 4, "CALL", 89.9)], "") === null &&
-    C.pickSignal([mk("A", 4, "CALL", 89.9)], null) === null);
-
-  const rows = [mk("A", 3, "CALL", 99), mk("B", 4, "PUT", 91), mk("C", 4, "CALL", 88)];
-  const sig = C.pickSignal(rows);
-  check("best qualifying 4/4 wins (B, 91)",
-    sig && sig.symbol === "B" && sig.side === "PUT" && sig.score === 91, JSON.stringify(sig));
-
-  const mixed = [mk("A", 4, "CALL", 96), mk("B", 4, "PUT", 80)];
-  const sig2 = C.pickSignal(mixed);
-  check("above-threshold beats below-threshold (96 wins)",
-    sig2 && sig2.symbol === "A", JSON.stringify(sig2));
-
-  check("custom threshold respected (77 @ min 50 -> taken)",
-    (() => { const s = C.pickSignal([mk("C", 4, "CALL", 77)], 50); return s && s.symbol === "C"; })(),
-    JSON.stringify(C.pickSignal([mk("C", 4, "CALL", 77)], 50)));
-  check("custom threshold respected (91 @ min 95 -> null)",
-    C.pickSignal([mk("C", 4, "CALL", 91)], 95) === null);
-
-  const one = C.pickSignal([mk("X", 4, "PUT", 95)]);
-  check("qualifier passes side through",
-    one && one.symbol === "X" && one.side === "PUT", JSON.stringify(one));
-
-  const noSide = [{ symbol: "Z", displayName: "Z", score: 100,
-                    ready: { side: null, passed: 4, checks: [] } }];
-  check("4/4 without side ignored", C.pickSignal(noSide) === null, JSON.stringify(C.pickSignal(noSide)));
-
-  check("entryThreshold: ''->90, '70'->70, null->90, junk->90",
-    C.entryThreshold("") === 90 && C.entryThreshold("70") === 70 &&
-    C.entryThreshold(null) === 90 && C.entryThreshold("abc") === 90,
-    [C.entryThreshold(""), C.entryThreshold("70"), C.entryThreshold(null), C.entryThreshold("abc")].join(","));
-}
-
-// ---------- scanner mirror (sanity, same fixtures style as analyzer tests) ----------
+// ---------- scanner mirror (still shared with analyzer) ----------
 {
   const now = 1790000040;
   const specs = [];
@@ -132,10 +40,14 @@ const r2 = x => Math.round((x + Number.EPSILON) * 100) / 100;
   const ranked = C.rankRows([row]);
   check("robot rank: score finite 0..100",
     ranked[0].score >= 0 && ranked[0].score <= 100 && isFinite(ranked[0].score), ranked[0].score);
-  const sig = C.pickSignal(ranked);
-  check("robot end-to-end: qualifier -> signal",
-    sig && sig.symbol === "R_10" && sig.side === "CALL", JSON.stringify(sig));
 }
+
+// ---------- helpers ----------
+check("round2 rounds cents", C.round2(0.1 + 0.2) === 0.3, C.round2(0.1 + 0.2));
+check("normalizeActiveSymbols filters non-synthetics",
+  Array.isArray(C.normalizeActiveSymbols([{ symbol: "R_10", market: "synthetic_index" },
+    { symbol: "frxEURUSD", market: "forex" }])),
+  "shape ok");
 
 // ---------- endpoint order ----------
 check("robot endpoint[0] = current public WSS",

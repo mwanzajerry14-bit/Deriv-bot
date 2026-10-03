@@ -60,11 +60,12 @@ check("both scripts load without throwing", loadError === null, loadError && loa
 check("window.CORE_R exported", sandbox.window.CORE_R && typeof sandbox.window.CORE_R === "object",
   String(sandbox.window.CORE_R));
 
-const need = ["CONFIG", "pickSignal", "entryThreshold", "moneyInit", "moneyOnWin", "moneyOnLose", "moneyShrink",
-  "isBroke", "tpHit", "slHit", "sessionPl", "analyzeSymbol", "rankRows",
-  "normalizeActiveSymbols", "round2", "botReadyState"];
+const need = ["CONFIG", "evaluateICT", "htfBiasOf", "regimeOf", "chaseBlock", "crtOf",
+  "riskInit", "stakeFor", "riskCanTrade", "riskOnResult", "riskResume", "MIN_STAKE",
+  "agg1m", "metricsOf", "splitChrono", "sweepThreshold", "monteCarlo", "backtestRun",
+  "analyzeSymbol", "normalizeActiveSymbols", "round2", "botReadyState"];
 if (sandbox.window.CORE_R) {
-  const missing = need.filter(k => typeof sandbox.window.CORE_R[k] !== "function" && k !== "CONFIG");
+  const missing = need.filter(k => typeof sandbox.window.CORE_R[k] === "undefined");
   check("CORE_R has every method the app calls", missing.length === 0, JSON.stringify(missing));
   check("CORE_R.CONFIG present", !!sandbox.window.CORE_R.CONFIG && Array.isArray(sandbox.window.CORE_R.CONFIG.endpoints));
   check("endpoint[0] = current public WSS",

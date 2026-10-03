@@ -1,10 +1,12 @@
 /**
- * End-to-end robot test: boots Trend_Robot.html against a scripted mock Deriv
- * backend and drives the FULL flow through the real UI handlers.
- * Scenario 1 (classic token): Connect -> direct authorize -> account switch
- *   -> 4/4 signal -> proposal -> buy -> settle -> TP -> auto-disarm -> STOP.
- * Scenario 2 (pat_ token): skips direct mode, REST accounts -> OTP -> same
- *   trading flow on the pre-authenticated OTP socket.
+ * End-to-end robot test (redesign edition): boots Trend_Robot.html against a
+ * scripted mock Deriv backend and drives the FULL flow through real UI handlers.
+ * Fixtures are ICT-qualified: R_10 ends with a sweep+BOS+displacement pattern
+ * that scores 13/13 and must trade; R_50 is flat and must NEVER trade.
+ * Scenario 1 (classic token): Scan -> direct authorize -> account switch ->
+ *   SETUP (score 13/13) -> proposal (1m, real payout EV gate) -> buy -> settle
+ *   -> flat stake stats (no martingale) -> trade-log persisted -> STOP.
+ * Scenario 2 (pat_ token): skips direct mode, REST accounts -> OTP -> same flow.
  */
 const fs = require("fs");
 const path = require("path");
@@ -23,34 +25,56 @@ function check(label, cond, detail) {
 const TOKEN = "e2eTestToken1234567890";
 const PAT = "pat_e2etest0123456789abcdef0123456789abcdef0123456789abcdef";
 const r2 = x => Math.round((x + Number.EPSILON) * 100) / 100;
+const NET = 0.886; // probe-measured payout net (0.66/0.35 − 1)
 
-/* ---- fixtures: R_10 = strong uptrend (4/4 CALL), R_50 = flat (never qualifies) ---- */
+/* ---- ICT-qualified fixture (same story as qa/ict_engine_test.js) ---- */
+const T0 = Math.floor(Date.now() / 1000 / 3600) * 3600 - 3600 * 72;
+function bar(i, o, h, l, c) { return { epoch: T0 + i * 60, open: o, high: h, low: l, close: c }; }
 function candlesR10() {
-  const now = Math.floor(Date.now() / 1000);
-  const specs = [];
-  let b = 100;
-  for (let i = 0; i < 31; i++) { specs.push({ o: b, h: b + 2.3, l: b - 0.3, c: b + 2 }); b += 2; }
-  specs[30] = { o: b, h: b + 1.8, l: b - 0.2, c: b + 1.5 };
-  return specs.map((s, i) => ({ epoch: now - (30 - i) * 60 - 30, open: s.o, high: s.h, low: s.l, close: s.c }));
-}
-function pricesR10() {
-  const c = candlesR10();
-  const live = c[30].close;
-  return Array.from({ length: 100 }, (_, i) => live - (99 - i) * 0.15);
+  const p = { n1: 1140, step: 0.55, red: 0.3, hard: 0.45, recAbove: 1, cool: 0.003,
+              nd: 2, dip: 0.18, nb: 4, bounce: 0.35, nr: 12, ret: 0.6, body: 1.3 };
+  const out = []; let px = 100, idx = 0;
+  const push = (d, w) => {
+    const o = px, c = px + d;
+    const h = Math.max(o, c) + (d < 0 ? 0.04 : (w || 0.12));
+    const l = Math.min(o, c) - (d < 0 ? (w || 0.12) : Math.max(0.06, (w || 0.12) - 0.06));
+    out.push(bar(idx++, o, h, l, c)); px = c;
+  };
+  for (let i = 0; i < p.n1; i++) push((i % 7) === 6 ? -p.red : p.step);
+  for (let i = 0; i < 60; i++) push(-p.hard, 0.1);
+  const recStep = ((60 * p.hard) + p.recAbove) / 60;
+  for (let i = 0; i < 60; i++) push(recStep, 0.1);
+  for (let i = 0; i < 60; i++) push(-p.cool, 0.1);
+  const F = 58 - p.nd;
+  for (let i = 0; i < F; i++) push(0, 0.02);
+  for (let i = 0; i < 2; i++) push(0.05, 0.05);
+  for (let i = 0; i < p.nd; i++) push(-p.dip, 0.2);
+  const Pz = px - 0.2;
+  for (let i = 0; i < p.nb; i++) push(p.bounce, 0.15);
+  for (let i = 0; i < p.nr; i++) push(-p.ret / p.nr, 0.5);
+  const o = px, l = Pz - 0.05, c = o + p.body;
+  out.push(bar(idx++, o, c + 0.12, l, c));
+  return out;
 }
 function candlesFlat() {
-  const now = Math.floor(Date.now() / 1000);
-  return Array.from({ length: 31 }, (_, i) => ({ epoch: now - (30 - i) * 60 - 30, open: 500, high: 500.5, low: 499.5, close: 500 }));
+  return Array.from({ length: 1397 }, (_, i) =>
+    ({ epoch: T0 + i * 60, open: 500, high: 500.5, low: 499.5, close: 500 }));
 }
-function pricesFlat() {
-  return Array.from({ length: 100 }, (_, i) => 500 + (i % 2 ? 0.01 : -0.01));
+const FIX = { R_10: candlesR10(), R_50: candlesFlat() };
+
+/* page ticks_history candles (count caps at 1000 → app paginates via end=epoch) */
+function pageCandles(sym, end) {
+  const all = FIX[sym] || [];
+  const maxEnd = end === "latest" || end == null ? Infinity : Number(end);
+  const eligible = all.filter(c => c.epoch <= maxEnd);
+  return eligible.slice(-1000);
 }
 
-/* ---- mock Deriv WebSocket (new-platform schema) ---- */
+/* ---- mock Deriv WebSocket ---- */
 function makeMockWS() {
   return class MockWS {
     constructor(url) {
-      this.url = url; this.readyState = 0; this._bal = 2.34;
+      this.url = url; this.readyState = 0; this._bal = 1000;
       setTimeout(() => { this.readyState = 1; if (this.onopen) this.onopen({}); }, 0);
     }
     send(str) {
@@ -63,10 +87,12 @@ function makeMockWS() {
         { symbol: "R_10", display_name: "Volatility 10 Index", market: "synthetic_index", pip_size: 3 },
         { symbol: "R_50", display_name: "Volatility 50 Index", market: "synthetic_index", pip_size: 4 }
       ]});
+      if (m.ticks_history != null && m.style === "candles" && m.granularity === 60)
+        return withRid({ candles: pageCandles(m.ticks_history, m.end) });
       if (m.ticks_history != null && m.style === "candles")
-        return withRid({ candles: m.ticks_history === "R_50" ? candlesFlat() : candlesR10() });
+        return withRid({ candles: pageCandles(m.ticks_history, m.end).slice(0, 80) });
       if (m.ticks_history != null && m.style === "ticks")
-        return withRid({ history: { prices: m.ticks_history === "R_50" ? pricesFlat() : pricesR10() } });
+        return withRid({ history: { prices: Array.from({ length: 100 }, (_, i) => 500 + i * 0.1) } });
       if (m.authorize != null) {
         if (m.authorize !== TOKEN)
           return withRid({ msg_type: "authorize", error: { code: "InvalidToken", message: "Your token has expired or is invalid." } });
@@ -84,26 +110,33 @@ function makeMockWS() {
         return withRid({ msg_type: "balance", balance: { balance: this._bal, currency: "USD" } });
       }
       if (m.proposal != null) {
-        const ok = m.underlying_symbol === "R_10" && m.duration_unit === "t" && m.duration === 5 && m.currency === "USD";
+        // redesign contract: minute expiries, USD, price = stake, net payout 0.886
+        const ok = m.underlying_symbol === "R_10" && m.duration_unit === "m" &&
+                   [1, 2, 3, 5, 10].indexOf(Number(m.duration)) >= 0 && m.currency === "USD" &&
+                   Number(m.amount) > 0;
         if (!ok) return withRid({ msg_type: "proposal", error: { code: "InputValidationFailed", message: "unexpected proposal fields: " + JSON.stringify(m) } });
-        return withRid({ msg_type: "proposal", proposal: { id: "32d2ec97-f568-6f7f-38c8-b1fda4275f32", ask_price: 0.35, payout: 0.61 } });
+        const price = Number(m.amount);
+        const payout = r2(price * (1 + NET));
+        return withRid({ msg_type: "proposal", proposal: { id: "32d2ec97-f568-6f7f-38c8-b1fda4275f32", ask_price: price, payout } });
       }
       if (m.buy != null) {
-        const ok = typeof m.buy === "string" && m.buy.length >= 32 && String(m.price) === "0.35";
+        const price = Number(m.price);
+        const ok = typeof m.buy === "string" && m.buy.length >= 32 && price > 0 && Math.abs(price - 7.5) < 0.001;
         if (!ok) return withRid({ msg_type: "buy", error: { code: "InputValidationFailed", message: "bad buy: " + JSON.stringify(m) } });
-        this._bal = r2(this._bal - 0.35);
+        this._bal = r2(this._bal - price);
         setTimeout(() => {
           if (this.onmessage) this.onmessage({ data: JSON.stringify({ msg_type: "balance", balance: { balance: this._bal, currency: "USD" } }) });
         }, 10);
-        return withRid({ msg_type: "buy", buy: { contract_id: 987654, buy_price: 0.35, payout: 0.61 } });
+        return withRid({ msg_type: "buy", buy: { contract_id: 987654, buy_price: price, payout: r2(price * (1 + NET)) } });
       }
       if (m.proposal_open_contract != null) {
         const ridSave = rid;
         withRid({ msg_type: "proposal_open_contract", proposal_open_contract: { contract_id: 987654, is_sold: 0, status: "open" } });
         setTimeout(() => {
-          this._bal = r2(this._bal + 0.62);
+          const payout = r2(7.5 * (1 + NET));
+          this._bal = r2(this._bal + payout);
           if (this.onmessage) this.onmessage({ data: JSON.stringify({ msg_type: "balance", balance: { balance: this._bal, currency: "USD" } }) });
-          if (this.onmessage) this.onmessage({ data: JSON.stringify({ msg_type: "proposal_open_contract", proposal_open_contract: { contract_id: 987654, is_sold: 1, status: "won", profit: 0.62 }, req_id: ridSave }) });
+          if (this.onmessage) this.onmessage({ data: JSON.stringify({ msg_type: "proposal_open_contract", proposal_open_contract: { contract_id: 987654, is_sold: 1, status: "won", profit: r2(7.5 * NET) }, req_id: ridSave }) });
         }, 20);
         return;
       }
@@ -133,18 +166,16 @@ function mockFetch(url, opts) {
   return resp({ errors: [{ message: "unexpected REST call: " + u }] }, 404);
 }
 
-/* ---- DOM stubs + sandbox factory ---- */
+/* ---- DOM stubs + sandbox factory (browser-accurate id contract) ---- */
 function mkEl() {
   return {
     style: {}, value: "", innerHTML: "", textContent: "", className: "",
     disabled: false, scrollTop: 0, scrollHeight: 0, _handlers: {},
-    classList: { add() {}, remove() {} },
+    classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
     addEventListener(t, f) { this._handlers[t] = f; }
   };
 }
 const MockWS = makeMockWS();
-/* browser-accurate: only ids that exist in the page's HTML resolve — a JS
-   reference to a missing element returns null (throws like the real DOM). */
 const htmlIds = new Set([...html.matchAll(/id="([A-Za-z0-9_]+)"/g)].map(m => m[1]));
 function buildSandbox() {
   const els = {};
@@ -171,10 +202,6 @@ function buildSandbox() {
   vm.createContext(sandbox);
   vm.runInContext(coreSrc, sandbox, { filename: "rcore.js" });
   vm.runInContext(appSrc, sandbox, { filename: "rapp.js" });
-  els.inpDur = mkEl(); els.inpDur.value = "5";
-  els.inpCd = mkEl(); els.inpCd.value = "20";
-  els.inpSweep = mkEl(); els.inpSweep.value = "2500";
-  els.inpMinScore = mkEl(); els.inpMinScore.value = "90";
   els.inpToken = mkEl();
   els.inpApp = mkEl(); els.inpApp.value = "1089";
   els.selAcct = mkEl(); els.selAcct.value = "demo";
@@ -185,11 +212,17 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 async function tradeFlow(els, tag) {
   const log = els.log.innerHTML;
-  check(tag + ": signal on R_10", /SIGNAL: Volatility 10 Index \(R_10\) CALL 4\/4/.test(log), log.slice(-600));
-  check(tag + ": proposal ok", /Proposal ok — price 0\.35/.test(log), log.slice(-600));
-  check(tag + ": OPEN #987654", /OPEN #987654/.test(log), log.slice(-600));
-  check(tag + ": settlement WON", /WON #987654/.test(log), log.slice(-600));
-  check(tag + ": TP disarm banner", /Take-profit/.test(els.banner.innerHTML), els.banner.innerHTML);
+  check(tag + ": ICT setup on R_10 (score 13/13)",
+    /SETUP: Volatility 10 Index \(R_10\) CALL · score 13\/13/.test(log), log.slice(-700));
+  check(tag + ": regime shown", /· trending ·/.test(log), log.slice(-700));
+  check(tag + ": minute expiry in setup", /\(1m\)/.test(log), log.slice(-700));
+  check(tag + ": proposal ok at stake 7.50", /Proposal ok — price 7\.5/.test(log), log.slice(-700));
+  check(tag + ": OPEN #987654", /OPEN #987654/.test(log), log.slice(-700));
+  check(tag + ": settlement WON with day P/L",
+    /WON #987654 · \+\$6\.65 · day P\/L \+\$6\.65 · consec 0/.test(log),
+    log.slice(-700));
+  check(tag + ": only one contract opened", (log.match(/OPEN #987654/g) || []).length === 1, log.slice(-700));
+  check(tag + ": no TP/SL disarm banner", !/Take-profit|Stop-loss/.test(els.banner.innerHTML), els.banner.innerHTML);
 }
 
 (async () => {
@@ -198,18 +231,28 @@ async function tradeFlow(els, tag) {
   const s1 = buildSandbox();
   s1.els.inpToken.value = TOKEN;
   await s1.els.btnScan._handlers.click();
-  await sleep(250);
-  check("s1: scanning 2 markets", /Watching 2 Volatility/.test(s1.els.log.innerHTML), "");
-  await s1.els.btnArm._handlers.click();
   await sleep(400);
+  check("s1: scan started", /Public scan running/.test(s1.els.log.innerHTML), s1.els.log.innerHTML.slice(-400));
+  await s1.els.btnArm._handlers.click();
+  await sleep(600);
   check("s1: direct token mode used", /Direct token mode/.test(s1.els.log.innerHTML), s1.els.log.innerHTML.slice(-400));
   check("s1: switched to VRT777", /Authorized: VRT777 · USD · demo/.test(s1.els.log.innerHTML), "");
+  check("s1: balance read $1000", /Balance: \$1000\.00/.test(s1.els.log.innerHTML), s1.els.log.innerHTML.slice(-400));
+  check("s1: armed with flat-risk copy",
+    /ARMED — flat 0\.75%\/trade, will buy the first setup scoring ≥11/.test(s1.els.log.innerHTML),
+    s1.els.log.innerHTML.slice(-400));
   check("s1: armed", s1.els.modePill.textContent !== "DISARMED" && !/Could not arm/.test(s1.els.banner.innerHTML),
     s1.els.modePill.textContent);
-  await sleep(500);
+  await sleep(700);
   await tradeFlow(s1.els, "s1");
   check("s1: stats 1 win", s1.els.stTW.textContent === "1 (1/0)", s1.els.stTW.textContent);
-  // STOP cleans up timers/sockets for this scenario
+  check("s1: next stake = flat 0.75% of new balance ($7.55, not doubled)",
+    s1.els.stStake.textContent === "$7.55", s1.els.stStake.textContent);
+  check("s1: day P/L +$6.65", s1.els.stPl.textContent === "+$6.65", s1.els.stPl.textContent);
+  check("s1: still ARMED after win (no bogus TP disarm)", s1.els.modePill.textContent === "ARMED",
+    s1.els.modePill.textContent);
+  check("s1: trade log persisted", /"symbol":"R_10"/.test(s1.store.dr_robot_log || "") &&
+    /"won":true/.test(s1.store.dr_robot_log || ""), (s1.store.dr_robot_log || "").slice(0, 200));
   s1.els.btnStop._handlers.click();
   check("s1: STOP works", s1.els.modePill.textContent === "STOPPED", s1.els.modePill.textContent);
 
@@ -218,25 +261,25 @@ async function tradeFlow(els, tag) {
   const s2 = buildSandbox();
   s2.els.inpToken.value = PAT;
   await s2.els.btnScan._handlers.click();
-  await sleep(250);
+  await sleep(400);
   await s2.els.btnArm._handlers.click();
-  await sleep(500);
+  await sleep(700);
   const l2 = s2.els.log.innerHTML;
   check("s2: PAT detected (no doomed direct attempt)", /PAT detected — direct WS mode doesn't accept PATs/.test(l2),
     l2.slice(-500));
   check("s2: no direct-mode failure noise", !/Direct authorize failed/.test(l2), l2.slice(-500));
   check("s2: REST OTP session opened", /OTP ok — opening authenticated session \(demo, account VRT123\)/.test(l2),
     l2.slice(-500));
-  check("s2: balance read", /Balance: \$2\.34/.test(l2), l2.slice(-500));
+  check("s2: balance read", /Balance: \$1000\.00/.test(l2), l2.slice(-500));
   const acctReq = (mockFetch.seen || []).find(r => /\/trading\/v1\/options\/accounts$/.test(r.u));
-  check("s2: REST accounts call sent Bearer PAT + Deriv-App-ID",
+  check("s2: REST accounts call Bearer PAT + Deriv-App-ID",
     acctReq && /^Bearer pat_/.test(acctReq.headers.Authorization || "") &&
     (acctReq.headers["Deriv-App-ID"] || "") === "1089",
     JSON.stringify(acctReq && { auth: String(acctReq.headers.Authorization || "").slice(0, 12),
                                  app: acctReq.headers["Deriv-App-ID"] }));
   check("s2: armed", s2.els.modePill.textContent !== "DISARMED" && !/Could not arm/.test(s2.els.banner.innerHTML),
     s2.els.modePill.textContent + " | " + s2.els.banner.innerHTML);
-  await sleep(500);
+  await sleep(700);
   await tradeFlow(s2.els, "s2");
 
   console.log(failures === 0 ? "\nROBOT E2E TEST PASSED ✓" : `\n${failures} FAILURES ✗`);

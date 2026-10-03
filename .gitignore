@@ -1,7 +1,8 @@
 # third-party reference clones (not my code)
 refs/
 # npm deps + test artifacts
-qa/node_modules/
+node_modules/
+package-lock.json
 qa/_core_extract.js
 __pycache__/
 .gh_token

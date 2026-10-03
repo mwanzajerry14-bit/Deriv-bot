@@ -66,6 +66,16 @@
   footer{color:var(--muted);font-size:12px;margin-top:20px;line-height:1.7}
   footer code{background:var(--panel2);padding:1px 6px;border-radius:4px}
   .grow{flex:1}
+  .hidden{display:none !important}
+  .tabs{display:flex;gap:8px;margin-bottom:14px}
+  .tab{background:var(--panel2);border:1px solid var(--line);color:var(--muted);padding:8px 16px;border-radius:9px;font-weight:700;font-size:13px;cursor:pointer;letter-spacing:.05em}
+  .tab.on{background:#2ea04322;border-color:#2ea04366;color:#7ee787}
+  .journal{background:#0a0d12;border:1px solid var(--line);border-radius:12px;padding:10px 12px;max-height:260px;overflow-y:auto;font:12px/1.7 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-word;color:#8b949e}
+  .dim{color:var(--muted);font-size:12px}
+  .lrow{margin:10px 0;font-size:13px}
+  .warn{background:#3d2e12;border:1px solid #e3b34155;color:#f0d68a;border-radius:10px;padding:10px 14px;margin-top:10px;font-size:13px}
+  button.apply{background:#2ea043;border-color:#2ea043;color:#fff;padding:8px 14px}
+  #labReport table{margin-top:8px}
 </style>
 </head>
 <body>
@@ -77,6 +87,13 @@
 
   <div class="banner" id="banner"></div>
 
+  <div class="tabs">
+    <button id="btnTabLive" class="tab on">LIVE</button>
+    <button id="btnTabLab" class="tab">BACKTEST LAB</button>
+    <button id="btnTabLog" class="tab">TRADE LOG</button>
+  </div>
+
+  <div id="secLive">
   <div class="card">
     <h3>Connection &amp; arming</h3>
     <div class="grid">
@@ -106,39 +123,68 @@
       <button id="btnScan">Connect &amp; scan</button>
       <button id="btnArm" class="green" disabled>Arm auto-trade</button>
       <button id="btnStop" class="red" style="display:none">STOP</button>
+      <button id="btnResume" class="green" style="display:none">RESUME (after auto-stop)</button>
       <span class="pill disarmed" id="modePill">DISARMED</span>
       <span class="status" id="status">Idle — press “Connect &amp; scan”. Scanning is public (no token needed); arming requires the token.</span>
     </div>
   </div>
 
   <div class="card">
-    <h3>Strategy settings (mirrors your XML bots)</h3>
+    <h3>Risk &amp; quality gates (flat stakes — martingale removed)</h3>
     <div class="grid">
-      <div><label class="f">Duration (ticks)</label><input type="number" id="inpDur" value="5" min="1" max="10"></div>
-      <div><label class="f">Cooldown after each trade (seconds ≈ 10 ticks)</label><input type="number" id="inpCd" value="20" min="0"></div>
+      <div><label class="f">Expiry for all markets (minutes)</label><select id="inpExpiry"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="5">5</option><option value="10">10</option></select>
+        <div class="hint">Best expiry is found in the Backtest Lab and applied automatically.</div></div>
+      <div><label class="f">Risk per trade (% of balance)</label><input type="number" id="inpRisk" value="0.75" min="0.5" max="1" step="0.05">
+        <div class="hint">Flat only — never increases after a loss.</div></div>
+      <div><label class="f">Daily loss lock (%)</label><input type="number" id="inpDailyLoss" value="3" min="1" max="10"></div>
+      <div><label class="f">Daily profit lock (%)</label><input type="number" id="inpDailyProfit" value="5" min="1" max="50"></div>
+      <div><label class="f">Max consecutive losses → stop</label><input type="number" id="inpMaxConsec" value="3" min="1" max="10"></div>
+      <div><label class="f">Max trades per session</label><input type="number" id="inpMaxSession" value="20" min="1" max="200"></div>
+      <div><label class="f">Cooldown after a loss (seconds)</label><input type="number" id="inpCd" value="30" min="0"></div>
       <div><label class="f">Sweep every (ms)</label><input type="number" id="inpSweep" value="2500" min="1500" step="500"></div>
-      <div><label class="f">Min entry score (auto-trade)</label><input type="number" id="inpMinScore" value="90" min="0" max="100">
-        <div class="hint">No entry below this score — 4/4 alone is not enough.</div></div>
-      <div><label class="f">Signal gate</label><input type="text" value="4/4 trend scanner (fixed)" disabled></div>
+      <div><label class="f">Min setup score (of 13, OOS-calibrated)</label><input type="number" id="inpMinScore" value="11" min="4" max="13">
+        <div class="hint">Critical checks (HTF bias, sweep, BOS/CHOCH, CRT) are mandatory regardless. Threshold is validated in the Backtest Lab — 11 is a placeholder until then.</div></div>
     </div>
     <div class="stats" id="stats">
       <div class="stat"><div class="k">Balance</div><div class="v" id="stBal">—</div></div>
       <div class="stat"><div class="k">Balance peak</div><div class="v" id="stPeak">—</div></div>
-      <div class="stat"><div class="k">Session P/L</div><div class="v" id="stPl">—</div></div>
+      <div class="stat"><div class="k">Day P/L (lock)</div><div class="v" id="stPl">—</div></div>
       <div class="stat"><div class="k">Trades (W/L)</div><div class="v" id="stTW">—</div></div>
-      <div class="stat"><div class="k">Next stake</div><div class="v" id="stStake">—</div></div>
-      <div class="stat"><div class="k">Streak</div><div class="v" id="stStreak">—</div></div>
-      <div class="stat"><div class="k">TP / SL</div><div class="v" id="stTPSL">—</div></div>
+      <div class="stat"><div class="k">Next flat stake</div><div class="v" id="stStake">—</div></div>
+      <div class="stat"><div class="k">Loss streak</div><div class="v" id="stStreak">—</div></div>
+      <div class="stat"><div class="k">Loss/Profit lock</div><div class="v" id="stTPSL">—</div></div>
     </div>
   </div>
 
-  <div id="tableArea"><table><thead><tr><th>#</th><th>Market</th><th>Score</th><th>Scanner</th><th>Status</th></tr></thead><tbody><tr><td colspan="5" style="color:#8b949e;text-align:center;padding:24px">No scan yet — press <b>Connect &amp; scan</b>.</td></tr></tbody></table></div>
+  <div id="tableArea"><table><thead><tr><th>#</th><th>Market</th><th>Score</th><th>Side</th><th>Regime</th><th>Checks</th><th>Status</th></tr></thead><tbody><tr><td colspan="7" style="color:#8b949e;text-align:center;padding:24px">No scan yet — press <b>Connect &amp; scan</b>.</td></tr></tbody></table></div>
 
   <div class="card"><h3>Robot journal</h3><div id="log"></div></div>
+  </div><!-- /secLive -->
+
+  <div id="secLab" class="hidden">
+    <div class="card">
+      <h3>Backtest lab — real 1m candles, honest splits</h3>
+      <div class="row">
+        <label class="f">History</label>
+        <select id="selLabDays"><option value="3">3 days</option><option value="7" selected>7 days</option><option value="14">14 days</option></select>
+        <button id="btnRunLab" class="green">Run backtest</button>
+        <span class="dim">Chronological 60/20/20 train/val/OOS · threshold swept on train only · Monte Carlo ×400 on OOS · break-even WR from the actual payout.</span>
+      </div>
+      <div id="labOut" class="journal"></div>
+      <div id="labReport"></div>
+    </div>
+  </div>
+
+  <div id="secLog" class="hidden">
+    <div class="card">
+      <h3>Trade log — every contract, win or lose (<span id="logCount">0</span>)</h3>
+      <div id="logArea"></div>
+    </div>
+  </div>
 
   <footer>
-    <b>How it works:</b> public WSS (<code>wss://api.derivws.com/trading/v1/options/ws/public</code>) sweeps up to 24 Volatility indices every few seconds — trend/strong/efficiency/tick-momentum metrics + the bot's exact 4-check gate. When ARMED and idle, the first qualifier (highest score if several tie in one sweep) triggers proposal → buy on an authenticated session created by <b>direct <code>authorize</code> with your token</b> (no App ID / registration needed; REST+OTP only as fallback), with the same stake floors/caps, TP/SL and one-trade-at-a-time rule as your XML bots. Settlement is tracked live; unknown outcomes auto-disarm.<br>
-    <b>Safety:</b> STOP never leaves new entries; balance &lt; $0.35 auto-disarms; TP/SL close the session; token lives only in your browser — revoke it when finished. Not financial advice. Test on demo first.
+    <b>How it works:</b> paginated 1m candles feed an ICT/SMC engine (1H/15m HTF bias · liquidity sweep · BOS/CHOCH · displacement · FVG/obstacle · CRT ref-candle · premium/discount · momentum/volume · regime + no-chase guards). Critical checks (HTF, sweep, BOS/CHOCH, CRT) are all mandatory; a 13-point score must clear the OOS-validated threshold; the live proposal's real payout must clear the EV gate. Entries are 1–10m options; every trade is flat 0.5–1% of balance (never increases after a loss) under a daily loss lock, daily profit lock and consecutive-loss stop. <b>WHEN THERE IS NO CLEAR EDGE: NO TRADE.</b><br>
+    <b>Safety:</b> STOP never leaves new entries; balance &lt; $0.35 → DO NOT TRADE; token lives only in your browser — revoke it when finished. No profit claims: losses are unavoidable and this is a demo tool, not financial advice. Positive expectancy is only ever claimed from transparent recorded samples.
   </footer>
 </div>
 
@@ -289,67 +335,409 @@ function normalizeActiveSymbols(list){
   return out;
 }
 
-/* ---------- money math: byte-for-byte equivalent of the XML bots ---------- */
-function moneyInit(balance){
-  const bal = round2(balance);
-  const base = Math.max(round2(bal * CONFIG.basePct), CONFIG.minStake);
-  const cap = Math.max(round2(bal * CONFIG.capPct), CONFIG.smallFloor);
+/* ============ ICT / SMC / CRT DECISION ENGINE (pure — qa/ict_engine_test.js) ============ */
+const MIN_STAKE = 0.35;
+
+function atrOf(c, n){
+  n = n || 14;
+  const s = c.slice(-(n + 1));
+  if (s.length < 2) return 0;
+  let sum = 0;
+  for (let i = 1; i < s.length; i++){
+    sum += Math.max(s[i].high - s[i].low,
+      Math.abs(s[i].high - s[i-1].close), Math.abs(s[i].low - s[i-1].close));
+  }
+  return sum / (s.length - 1);
+}
+/* fractal pivots (left/right bars) */
+function swingsOf(c, left){
+  left = left || 2;
+  const out = [];
+  for (let i = left; i < c.length - left; i++){
+    let hi = true, lo = true;
+    for (let k = 1; k <= left; k++){
+      if (c[i].high < c[i-k].high || c[i].high <= c[i+k].high) hi = false;
+      if (c[i].low  > c[i-k].low  || c[i].low  >= c[i+k].low)  lo = false;
+    }
+    if (hi) out.push({ i, type: "hi", price: c[i].high });
+    if (lo) out.push({ i, type: "lo", price: c[i].low });
+  }
+  return out;
+}
+/* market structure: BOS (close beyond last pivot in trend direction) / CHOCH (first break opposite) */
+function structureOf(c){
+  const res = { bias: "neutral", bos: false, choch: false, lastEvent: null, brokenLevel: null };
+  if (!c || c.length < 15) return res;
+  const sw = swingsOf(c, 1);   // ±1 pivot: turns are visible one bar earlier
+  if (sw.length < 2) return res;
+  let lastHi = null, lastLo = null, trend = 0; // +1 bull, -1 bear
+  let s = 0;
+  for (let i = 0; i < c.length; i++){
+    while (s < sw.length && sw[s].i <= i) {
+      if (sw[s].type === "hi") lastHi = sw[s]; else lastLo = sw[s];
+      s++;
+    }
+    const close = c[i].close;
+    if (lastHi && close > lastHi.price){
+      if (trend === -1){ res.choch = true; res.lastEvent = { dir: "bull", type: "choch", i }; }
+      else { res.bos = true; res.lastEvent = { dir: "bull", type: "bos", i }; }
+      trend = 1; res.brokenLevel = lastHi.price; lastHi = null;
+    } else if (lastLo && close < lastLo.price){
+      if (trend === 1){ res.choch = true; res.lastEvent = { dir: "bear", type: "choch", i }; }
+      else { res.bos = true; res.lastEvent = { dir: "bear", type: "bos", i }; }
+      trend = -1; res.brokenLevel = lastLo.price; lastLo = null;
+    }
+  }
+  res.bias = trend > 0 ? "bull" : trend < 0 ? "bear" : "neutral";
+  return res;
+}
+/* dealing range → premium / discount */
+function dealingRange(c, n){
+  n = n || 50;
+  const s = c.slice(-n);
+  let hi = -Infinity, lo = Infinity;
+  for (const k of s){ if (k.high > hi) hi = k.high; if (k.low < lo) lo = k.low; }
+  const eq = (hi + lo) / 2;
+  return { hi, lo, eq, zone: "eq" };
+}
+function zoneAt(range, price){
+  if (price == null) return "eq";
+  if (price < range.eq) return "discount";
+  if (price > range.eq) return "premium";
+  return "eq";
+}
+/* last unfilled FVG: gap between bar i and i-2 (3-candle imbalance) */
+function lastFVG(c){
+  for (let i = c.length - 1; i >= 2; i--){
+    if (c[i].low > c[i-2].high) return { dir: "bull", bottom: c[i-2].high, top: c[i].low, i };
+    if (c[i].high < c[i-2].low) return { dir: "bear", bottom: c[i].high, top: c[i-2].low, i };
+  }
+  return null;
+}
+function displacementAt(c, i){
+  if (i < 1 || i >= c.length) return false;
+  const k = c[i], body = Math.abs(k.close - k.open), range = k.high - k.low;
+  if (range <= 0) return false;
+  const a = atrOf(c.slice(0, i + 1), 14) || range;
+  return body >= 0.5 * range && range >= 0.8 * a;
+}
+/* liquidity sweep: wick beyond a key level, close back inside (last `look` bars) */
+function sweepNear(c, key, look){
+  look = look || 12;
+  const start = Math.max(1, c.length - look);
+  for (let i = c.length - 1; i >= start; i--){
+    if (c[i].low < key && c[i].close > key) return { side: "low", i };   // sell-side swept → bullish
+    if (c[i].high > key && c[i].close < key) return { side: "high", i }; // buy-side swept → bearish
+  }
+  return null;
+}
+/* CRT: reference candle (last closed 15m) → sweep of its low/high + rejection back inside */
+function crtOf(ref, c1, look){
+  if (!ref || !c1 || c1.length < 5) return null;
+  const out = { ref, bull: false, bear: false };
+  const sw = sweepNear(c1, ref.low, look || 25);
+  if (sw && sw.side === "low"){
+    const k = c1[c1.length - 1];
+    if (k.close > ref.low && k.close < (ref.high + ref.low) / 2 + (ref.high - ref.low)) out.bull = true;
+  }
+  const sh = sweepNear(c1, ref.high, look || 25);
+  if (sh && sh.side === "high"){
+    const k = c1[c1.length - 1];
+    if (k.close < ref.high && k.close > (ref.high + ref.low) / 2 - (ref.high - ref.low)) out.bear = true;
+  }
+  return out;
+}
+/* regime: efficiency ratio + range% → trending / ranging / choppy (+ vol class) */
+function regimeOf(c, n){
+  n = n || 30;
+  const s = c.slice(-n);
+  if (s.length < 10) return { type: "choppy", er: 0, rangePct: 0 };
+  let path = 0;
+  for (let i = 1; i < s.length; i++) path += Math.abs(s[i].close - s[i-1].close);
+  const net = Math.abs(s[s.length-1].close - s[0].close);
+  const er = path > 0 ? net / path : 0;
+  let rs = 0, rc = 0;
+  for (const k of s){ if (k.close > 0){ rs += (k.high - k.low) / k.close; rc++; } }
+  const rangePct = rc ? (rs / rc) * 100 : 0;
+  let type = "ranging";
+  if (er >= 0.35) type = "trending";
+  else if (er < 0.12) type = "choppy";
+  return { type, er, rangePct };
+}
+/* do-not-chase guards */
+function chaseBlock(c, side, sweepJustHappened){
+  const reasons = [];
+  if (!c || c.length < 6) return ["insufficient-data"];
+  const n = c.length;
+  let run = 0;
+  const dir = side === "CALL" ? 1 : -1;
+  for (let i = n - 1; i > 0 && run < 6; i--){
+    const up = c[i].close > c[i].open;
+    if ((dir > 0 && up) || (dir < 0 && !up)) run++; else break;
+  }
+  if (run >= 3) reasons.push("consecutive-run(" + run + ")");
+  const k = c[n-1], body = Math.abs(k.close - k.open);
+  const a = atrOf(c, 14) || 1;
+  if (body > 2.2 * a) reasons.push("impulse-already-moved");
+  const r = dealingRange(c, 40);
+  const pos = (k.close - r.lo) / ((r.hi - r.lo) || 1);
+  if (pos > 0.40 && pos < 0.60 && !sweepJustHappened) reasons.push("mid-range-no-sweep");
+  return reasons;
+}
+function momentumOf(c){
+  const n = c.length;
+  if (n < 22) return { bull: false, bear: false, net: 0 };
+  // 20-bar swing momentum: measured across the whole impulse→retrace→sweep
+  // structure, so an entry INTO a retraced sweep zone still reads as with-trend
+  const net = c[n-1].close - c[n-21].close;
+  return { bull: net > 0, bear: net < 0, net };
+}
+/* HTF bias: 1h structure + 15m structure must agree */
+function htfBiasOf(c1h, c15m){
+  const a = structureOf(c1h), b = structureOf(c15m);
+  if (a.bias === b.bias && a.bias !== "neutral") return a.bias;
+  return "neutral";
+}
+/*
+ Full evaluation per symbol. m = {c1h, c15m, c5, c1, ref15}
+ payoutNet = net profit fraction (e.g. 0.886); cfg = {threshold, evMin, wrEstimate}
+ Returns BOTH directions; caller picks the eligible side with the highest score.
+ 13-point scale per spec: htf+2 sweep+2 bos+2 crt+2 fvgOb+1 disp+1 mom+1 vol+1 payout+1
+*/
+function evaluateICT(m, payoutNet, cfg){
+  cfg = cfg || {};
+  const threshold = cfg.threshold != null ? cfg.threshold : 11;
+  const evMin = cfg.evMin != null ? cfg.evMin : 0.02;
+  const wr = cfg.wrEstimate != null ? cfg.wrEstimate : 0.55;
+  const out = { regime: regimeOf(m.c1, 60), checks: {}, score: 0, side: null, blocked: [] };
+  const c15 = m.c15 || m.c15m || [];                 // callers name it c15
+  const htf = htfBiasOf(m.c1h, c15);
+  const st5 = structureOf(m.c5);
+  const mom = momentumOf(m.c1);
+  const fvg = lastFVG(m.c1);
+  const crt = crtOf(m.ref15, m.c1, 25);
+  const ev = wr * payoutNet - (1 - wr);
+  out.ev = ev;
+  out.regimeOk = out.regime.type !== "choppy";
+  // sweep key = recent liquidity pool from bars BEFORE the current one
+  // (including the current bar would make the deepest wick its own key → never sweeps)
+  const priors = m.c1.slice(-60, -1);
+  const keyLo = priors.length ? Math.min(...priors.map(x => x.low)) : null;
+  const keyHi = priors.length ? Math.max(...priors.map(x => x.high)) : null;
+  const k1 = m.c1[m.c1.length - 1], k5 = m.c5[m.c5.length - 1];
+  const dirOf = k => (k ? (k.close > k.open ? "bull" : k.close < k.open ? "bear" : null) : null);
+  const disp1 = displacementAt(m.c1, m.c1.length - 1) ? dirOf(k1) : null;
+  const disp5 = displacementAt(m.c5, m.c5.length - 1) ? dirOf(k5) : null;
+  const sides = {};
+  for (const side of ["CALL", "PUT"]){
+    const bull = side === "CALL";
+    const want = bull ? "bull" : "bear";
+    const sweepBull = keyLo != null && sweepNear(m.c1, keyLo, 20);
+    const sweepBear = keyHi != null && sweepNear(m.c1, keyHi, 20);
+    const c = {
+      htf: htf === want,
+      sweep: bull ? !!(sweepBull && sweepBull.side === "low") : !!(sweepBear && sweepBear.side === "high"),
+      bosChoch: !!(st5.lastEvent && st5.lastEvent.dir === want),
+      crt: !!(crt && (bull ? crt.bull : crt.bear)),
+      fvgOb: (fvg && fvg.dir === want) || disp1 === want || disp5 === want,
+      displacement: disp1 === want || disp5 === want,
+      momentum: bull ? mom.bull : mom.bear,
+      volatility: out.regimeOk && out.regime.rangePct > 0.02,
+      payout: ev >= evMin
+    };
+    const criticalOk = c.htf && c.sweep && c.bosChoch && c.crt;
+    let score = 0;
+    score += c.htf ? 2 : 0; score += c.sweep ? 2 : 0; score += c.bosChoch ? 2 : 0; score += c.crt ? 2 : 0;
+    score += c.fvgOb ? 1 : 0; score += c.displacement ? 1 : 0; score += c.momentum ? 1 : 0;
+    score += c.volatility ? 1 : 0; score += c.payout ? 1 : 0;
+    const chase = chaseBlock(m.c1, side, c.sweep);
+    const blocked = [];
+    if (!out.regimeOk) blocked.push("regime-" + out.regime.type);
+    if (!criticalOk) blocked.push("critical-missing");
+    if (score < threshold) blocked.push("score<" + threshold);
+    if (chase.length) blocked.push(...chase);
+    if (ev < evMin) blocked.push("ev<" + evMin);
+    sides[side] = { checks: c, score, criticalOk, blocked, eligible: blocked.length === 0 };
+  }
+  const pick = sides.CALL.eligible && sides.PUT.eligible
+    ? (sides.CALL.score >= sides.PUT.score ? "CALL" : "PUT")
+    : (sides.CALL.eligible ? "CALL" : (sides.PUT.eligible ? "PUT" : null));
+  out.sides = sides;
+  out.side = pick;
+  if (pick){
+    out.score = sides[pick].score;
+    out.checks = sides[pick].checks;
+    out.blocked = [];
+    out.eligible = true;
+  } else {
+    const better = sides.CALL.score >= sides.PUT.score ? sides.CALL : sides.PUT;
+    out.score = better.score;
+    out.checks = better.checks;
+    out.blocked = better.blocked;
+    out.eligible = false;
+  }
+  return out;
+}
+
+/* ============ RISK (flat stake, daily/session stops — NO martingale) ============ */
+function riskInit(bal, cfg){
+  cfg = cfg || {};
   return {
-    startBal: bal, base, cap,
-    tp: round2(bal * CONFIG.tpPct),
-    sl: Math.max(round2(bal * CONFIG.slPct), CONFIG.smallFloor),
-    stake: base, streak: 0
+    riskPct: cfg.riskPct != null ? cfg.riskPct : 0.75,
+    dailyLossPct: cfg.dailyLossPct != null ? cfg.dailyLossPct : 3,
+    dailyProfitPct: cfg.dailyProfitPct != null ? cfg.dailyProfitPct : 5,
+    maxConsec: cfg.maxConsec != null ? cfg.maxConsec : 3,
+    maxSession: cfg.maxSession != null ? cfg.maxSession : 20,
+    cooldownSec: cfg.cooldownSec != null ? cfg.cooldownSec : 30,
+    smallMaxPct: cfg.smallMaxPct != null ? cfg.smallMaxPct : 2,
+    dayKey: null, dayStartBal: 0, dayPnl: 0, dayTrades: 0,
+    sessionTrades: 0, consecLosses: 0, cooldownUntil: 0, stopped: null
   };
 }
-function moneyOnLose(m){
-  m.streak += 1;
-  m.stake = Math.min(round2(m.stake * 2), m.cap);
-  return m;
+function stakeFor(bal, r){
+  const raw = round2(bal * r.riskPct / 100);
+  if (raw >= MIN_STAKE) return { stake: raw, ok: true };
+  if (MIN_STAKE / Math.max(bal, 1e-9) * 100 <= r.smallMaxPct)
+    return { stake: MIN_STAKE, ok: true, note: "min-stake floor" };
+  return { stake: 0, ok: false, reason: "min stake $" + MIN_STAKE + " would risk " +
+    (MIN_STAKE / bal * 100).toFixed(1) + "% > " + r.smallMaxPct + "% — DO NOT TRADE" };
 }
-function moneyOnWin(m, liveBal){
-  m.base = Math.max(round2(liveBal * CONFIG.basePct), CONFIG.minStake);
-  m.cap = Math.max(round2(liveBal * CONFIG.capPct), CONFIG.smallFloor);
-  m.stake = m.base;
-  m.streak = 0;
-  return m;
+function riskClock(r, bal, now){
+  const day = new Date(now).toDateString();
+  if (r.dayKey !== day){ r.dayKey = day; r.dayStartBal = bal; r.dayPnl = 0; r.dayTrades = 0;
+    if (r.stopped === "daily_loss" || r.stopped === "daily_profit") r.stopped = null; }
 }
-function moneyShrink(m, liveBal){
-  if (liveBal >= CONFIG.minStake && liveBal < m.stake) m.stake = round2(liveBal);
-  return m;
+function riskCanTrade(r, now){
+  if (r.stopped) return { ok: false, reason: r.stopped };
+  if (now < r.cooldownUntil) return { ok: false, reason: "cooldown" };
+  if (r.sessionTrades >= r.maxSession) return { ok: false, reason: "session_cap" };
+  return { ok: true };
 }
-function isBroke(liveBal){ return liveBal < CONFIG.minStake; }
-function tpHit(m, liveBal){ return round2(liveBal - m.startBal) >= m.tp; }
-function slHit(m, liveBal){ return round2(m.startBal - liveBal) >= m.sl; }
-function sessionPl(m, liveBal){ return round2(liveBal - m.startBal); }
+function riskOnResult(r, pnl, now){
+  r.sessionTrades++; r.dayTrades++;
+  r.dayPnl = round2(r.dayPnl + pnl);
+  if (pnl < 0){ r.consecLosses++; r.cooldownUntil = now + r.cooldownSec * 1000; }
+  else r.consecLosses = 0;
+  if (r.dayPnl <= -(r.dayStartBal * r.dailyLossPct / 100)) r.stopped = "daily_loss";
+  else if (r.dayPnl >= (r.dayStartBal * r.dailyProfitPct / 100)) r.stopped = "daily_profit";
+  else if (r.consecLosses >= r.maxConsec) r.stopped = "consec_loss";
+  else if (r.sessionTrades >= r.maxSession) r.stopped = "session_cap";
+  return r.stopped;
+}
+function riskResume(r){ r.stopped = null; r.consecLosses = 0; r.sessionTrades = 0; }
 
-/* pick the trade: ONLY 4/4 qualifiers AT OR ABOVE the entry-score threshold;
-   best score wins (ties -> first in rank order). Default threshold = CONFIG.entryScore (90). */
-function pickSignal(rows, minScore){
-  const min = (minScore == null || minScore === "" || !isFinite(Number(minScore))) ? CONFIG.entryScore : Number(minScore);
-  const quals = (rows || []).filter(r => r && r.ready && r.ready.passed === 4 && r.ready.side &&
-                                          (r.score || 0) >= min);
-  if (!quals.length) return null;
-  quals.sort((a, b) => (b.score || 0) - (a.score || 0));
-  const w = quals[0];
-  return { symbol: w.symbol, displayName: w.displayName, side: w.ready.side,
-           score: w.score, pip: w.pip, checks: w.ready.checks };
+/* ============ BACKTEST CORE (candle-close proxy; see AUDIT limits) ============ */
+function agg1m(c1m, sec){
+  const out = [], map = new Map();
+  for (const k of c1m){
+    const b = Math.floor(k.epoch / sec) * sec;
+    if (!map.has(b)) map.set(b, { epoch: b, open: k.open, high: k.high, low: k.low, close: k.close });
+    else { const g = map.get(b); if (k.high > g.high) g.high = k.high; if (k.low < g.low) g.low = k.low; g.close = k.close; }
+  }
+  for (const b of [...map.keys()].sort((a, x) => a - x)) out.push(map.get(b));
+  return out;
 }
-function entryThreshold(minScore){
-  if (minScore == null || minScore === "") return CONFIG.entryScore;
-  const m = Number(minScore);
-  return isFinite(m) ? m : CONFIG.entryScore;
+function metricsOf(trades, net, startBal){
+  const n = trades.length;
+  const wins = trades.filter(t => t.win), losses = trades.filter(t => !t.win);
+  const wr = n ? wins.length / n : 0;
+  const avgWin = wins.length ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length : 0;
+  const avgLoss = losses.length ? losses.reduce((s, t) => s + t.pnl, 0) / losses.length : 0;
+  const ev = n ? trades.reduce((s, t) => s + t.pnl, 0) / n : 0;
+  const gp = wins.reduce((s, t) => s + t.pnl, 0), gl = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
+  let eq = 0, peak = 0, maxDD = 0, cl = 0, cw = 0, mcl = 0, mcw = 0;
+  for (const t of trades){
+    eq += t.pnl; if (eq > peak) peak = eq;
+    const dd = peak - eq; if (dd > maxDD) maxDD = dd;
+    if (t.win){ cw++; cl = 0; } else { cl++; cw = 0; }
+    if (cl > mcl) mcl = cl; if (cw > mcw) mcw = cw;
+  }
+  const total = trades.reduce((s, t) => s + t.pnl, 0);
+  const be = 1 / (1 + net); // break-even WR given net payout `net` per 1 unit staked
+  return { n, wr, lossRate: 1 - wr, avgWin, avgLoss, ev, pf: gl > 0 ? gp / gl : (gp > 0 ? Infinity : 0),
+    maxDD, maxConsecLoss: mcl, maxConsecWin: mcw, total, roc: startBal ? total / startBal : 0,
+    breakeven: be, edge: wr - be, expectancyPerTrade: ev };
+}
+function splitChrono(arr, a, b){
+  const n = arr.length, i1 = Math.floor(n * a), i2 = Math.floor(n * (a + b));
+  return { train: arr.slice(0, i1), val: arr.slice(i1, i2), oos: arr.slice(i2) };
+}
+function sweepThreshold(trainTrades, net, cands, minN){
+  minN = minN || 10;
+  let best = null;
+  for (const th of (cands || [8, 9, 10, 11, 12, 13])){
+    const sel = trainTrades.filter(t => t.score >= th);
+    if (sel.length < minN) continue;
+    const m = metricsOf(sel, net, 0);
+    if (!best || m.ev > best.metrics.ev) best = { threshold: th, metrics: m };
+  }
+  return best;
+}
+function monteCarlo(trades, net, startBal, iters, seed){
+  iters = iters || 400;
+  let s = seed || 42;
+  const rnd = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff; };
+  const finals = [], dds = []; let wins = 0;
+  for (let it = 0; it < iters; it++){
+    const sh = trades.slice();
+    for (let i = sh.length - 1; i > 0; i--){ const j = Math.floor(rnd() * (i + 1)); const t = sh[i]; sh[i] = sh[j]; sh[j] = t; }
+    let eq = 0, peak = 0, dd = 0;
+    for (const t of sh){ eq += t.pnl; if (eq > peak) peak = eq; if (peak - eq > dd) dd = peak - eq; }
+    finals.push(eq); dds.push(dd);
+    if (eq > 0) wins++;
+  }
+  finals.sort((a, b) => a - b); dds.sort((a, b) => a - b);
+  const q = (arr, p) => arr[Math.min(arr.length - 1, Math.floor(arr.length * p))];
+  return { iters, pctProfitable: wins / iters, finalP10: q(finals, 0.1), finalP50: q(finals, 0.5),
+    finalP90: q(finals, 0.9), ddP50: q(dds, 0.5), ddP90: q(dds, 0.9) };
+}
+/* simulate one symbol/expiry over 1m history (decisions at each closed bar) */
+function backtestRun(o){
+  const c1 = o.c1m, net = o.net, expo = o.expiryMin, stake = o.stake, cfg = o.cfg || {};
+  const warm = 80;
+  const c5 = agg1m(c1, 300), c15 = agg1m(c1, 900), c1h = agg1m(c1, 3600);
+  const trades = [];
+  let coolUntil = -1;
+  const epochOfIdx = i => c1[i].epoch;
+  const sliceUp = (arr, endEpoch, n) => { let cnt = 0; const out = [];
+    for (let i = arr.length - 1; i >= 0 && cnt < n; i--){ if (arr[i].epoch <= endEpoch){ out.unshift(arr[i]); cnt++; } }
+    return out; };
+  for (let i = warm; i < c1.length - expo - 1; i++){
+    if (i < coolUntil) continue;
+    const t = epochOfIdx(i);
+    const m = {
+      c1: sliceUp(c1, t, 80), c5: sliceUp(c5, t, 60), c15: sliceUp(c15, t, 40), c1h: sliceUp(c1h, t, 50),
+      ref15: (function(){ const closed = sliceUp(c15, t - 900, 2); return closed.length ? closed[closed.length - 1] : null; })()
+    };
+    if (m.c1h.length < 12 || m.c15.length < 12 || m.c5.length < 20 || !m.ref15) continue;
+    const ev = evaluateICT(m, net, cfg);
+    if (!ev.eligible) continue;
+    const entry = c1[i].close, exitC = c1[i + expo].close;
+    const win = ev.side === "CALL" ? exitC > entry : exitC < entry;
+    trades.push({ i, epoch: t, symbol: o.symbol, side: ev.side, expiry: expo, score: ev.score,
+      checks: ev.checks, regime: ev.regime.type, entry, exit: exitC, win,
+      pnl: round2(win ? stake * net : -stake), stake });
+    coolUntil = i + (cfg.backtestCooldownBars || 3);
+  }
+  return trades;
 }
 
 /* browser export — without this every window.CORE_R.* read in the app throws */
 if (typeof window !== "undefined"){
-  window.CORE_R = { CONFIG, round2, sign, computeMetrics, botReadyState, percentileRanks, rankRows,
-                    analyzeSymbol, normalizeActiveSymbols, moneyInit, moneyOnLose, moneyOnWin,
-                    moneyShrink, isBroke, tpHit, slHit, sessionPl, pickSignal, entryThreshold };
+  const _eng = { atrOf, swingsOf, structureOf, dealingRange, zoneAt, lastFVG, displacementAt,
+    sweepNear, crtOf, regimeOf, chaseBlock, momentumOf, htfBiasOf, evaluateICT,
+    MIN_STAKE, riskInit, stakeFor, riskClock, riskCanTrade, riskOnResult, riskResume,
+    agg1m, metricsOf, splitChrono, sweepThreshold, monteCarlo, backtestRun };
+  window.CORE_R = Object.assign({ CONFIG, round2, sign, computeMetrics, botReadyState, percentileRanks, rankRows,
+                    analyzeSymbol, normalizeActiveSymbols }, _eng);
 }
 if (typeof module !== "undefined" && module.exports){
-  module.exports = { CONFIG, round2, sign, computeMetrics, botReadyState, percentileRanks, rankRows,
-                     analyzeSymbol, normalizeActiveSymbols, moneyInit, moneyOnLose, moneyOnWin,
-                     moneyShrink, isBroke, tpHit, slHit, sessionPl, pickSignal, entryThreshold };
+  const _eng = { atrOf, swingsOf, structureOf, dealingRange, zoneAt, lastFVG, displacementAt,
+    sweepNear, crtOf, regimeOf, chaseBlock, momentumOf, htfBiasOf, evaluateICT,
+    MIN_STAKE, riskInit, stakeFor, riskClock, riskCanTrade, riskOnResult, riskResume,
+    agg1m, metricsOf, splitChrono, sweepThreshold, monteCarlo, backtestRun };
+  module.exports = Object.assign({ CONFIG, round2, sign, computeMetrics, botReadyState, percentileRanks, rankRows,
+                     analyzeSymbol, normalizeActiveSymbols }, _eng);
 }
 </script>
 
@@ -362,11 +750,32 @@ if (typeof module !== "undefined" && module.exports){
     pub: null, auth: null,
     reqId: 1, pending: new Map(),
     sweepTimer: null, ping: null, aping: null,
-    money: null, symbols: [], rows: [],
+    risk: null, symbols: [], rows: [],
+    hist: new Map(), nextHist: new Map(),
     inTrade: false, current: null, cooldownUntil: 0,
     trades: 0, wins: 0, started: false,
-    cancelled: false
+    calib: { threshold: 11, wrEstimate: 0.55, evMin: 0.02, source: "default" },
+    profiles: {}, tradeLog: [], lab: null, _gapWarned: {}
   };
+  function loadPrefs(){
+    try {
+      const c = JSON.parse(localStorage.getItem("dr_robot_calib") || "null");
+      if (c && c.threshold) Object.assign(state.calib, c);
+      state.profiles = JSON.parse(localStorage.getItem("dr_robot_profiles") || "{}");
+      state.tradeLog = JSON.parse(localStorage.getItem("dr_robot_log") || "[]");
+    } catch(e){}
+  }
+  function savePrefs(){
+    try {
+      localStorage.setItem("dr_robot_calib", JSON.stringify(state.calib));
+      localStorage.setItem("dr_robot_profiles", JSON.stringify(state.profiles));
+      localStorage.setItem("dr_robot_log", JSON.stringify(state.tradeLog.slice(-300)));
+    } catch(e){}
+  }
+  function profileOf(sym){
+    return state.profiles[sym] || { on: true, expiry: 1, payoutNet: 0.886 };
+  }
+  function payoutNetOf(sym){ return profileOf(sym).payoutNet || 0.886; }
 
   function log(msg, cls){
     const el = $("log");
@@ -389,21 +798,22 @@ if (typeof module !== "undefined" && module.exports){
     $("btnStop").style.display = (m === "disarmed" || m === "stopped") ? "none" : "";
   }
   function stats(){
-    const m = state.money;
+    const r = state.risk;
     $("stBal").textContent = state.lastBal != null ? "$" + state.lastBal.toFixed(2) : "—";
     try {
       let pk = Number(localStorage.getItem("dr_robot_peak") || 0);
       if (state.lastBal != null && state.lastBal > pk){ pk = state.lastBal; localStorage.setItem("dr_robot_peak", String(pk)); }
       $("stPeak").textContent = pk > 0 ? "$" + pk.toFixed(2) : "—";
     } catch(e){ $("stPeak").textContent = "—"; }
-    if (m && state.lastBal != null){
-      const pl = window.CORE_R.sessionPl(m, state.lastBal);
+    if (r && state.lastBal != null){
+      const pl = r.dayPnl || 0;
       const el = $("stPl");
       el.textContent = (pl >= 0 ? "+$" : "−$") + Math.abs(pl).toFixed(2);
       el.className = "v " + (pl >= 0 ? "pos" : "neg");
-      $("stStake").textContent = "$" + m.stake.toFixed(2);
-      $("stStreak").textContent = String(m.streak);
-      $("stTPSL").textContent = "+$" + m.tp.toFixed(2) + " / −$" + m.sl.toFixed(2);
+      const sf = window.CORE_R.stakeFor(state.lastBal, r);
+      $("stStake").textContent = sf.ok ? "$" + sf.stake.toFixed(2) : "BLOCKED";
+      $("stStreak").textContent = String(r.consecLosses || 0) + " / " + readRiskCfg().maxConsec;
+      $("stTPSL").textContent = "−" + readRiskCfg().dailyLossPct + "% / +" + readRiskCfg().dailyProfitPct + "%";
     } else { $("stPl").textContent = "—"; $("stStake").textContent = "—"; $("stStreak").textContent = "—"; $("stTPSL").textContent = "—"; }
     $("stTW").textContent = state.trades + " (" + state.wins + "/" + (state.trades - state.wins) + ")";
   }
@@ -464,42 +874,71 @@ if (typeof module !== "undefined" && module.exports){
     log("Watching " + state.symbols.length + " Volatility indices", "i");
   }
 
-  async function fetchSym(s){
-    const C = window.CORE_R.CONFIG;
-    const [cRes, tRes] = await Promise.all([
-      wsSend(state.pub, { ticks_history: s.symbol, style: "candles", granularity: C.granularity, count: C.candleCount, end: "latest" }),
-      wsSend(state.pub, { ticks_history: s.symbol, style: "ticks", count: C.tickCount, end: "latest" })
-    ]);
-    const candles = (cRes.candles || []).map(c => ({ epoch: Number(c.epoch), open: Number(c.open), high: Number(c.high), low: Number(c.low), close: Number(c.close) }))
-      .filter(c => isFinite(c.epoch) && isFinite(c.close));
-    const prices = ((tRes.history || {}).prices || []).map(Number).filter(isFinite);
-    if (candles.length < 5 || prices.length < 20) throw new Error("insufficient data");
-    return { candles, prices };
+  /* paginated 1m history (count caps at 1000/request → walk back via end=epoch) */
+  async function loadHistory(sym, pages){
+    const byEpoch = new Map((state.hist.get(sym) || []).map(c => [c.epoch, c]));
+    let end = null;
+    for (let p = 0; p < pages; p++){
+      const q = { ticks_history: sym, style: "candles", granularity: 60, count: 1000,
+                  end: end == null ? "latest" : end };
+      const r = await wsSend(state.pub, q);
+      const arr = r.candles || [];
+      if (!arr.length) break;
+      for (const c of arr){
+        const e = Number(c.epoch);
+        if (!isFinite(e)) continue;
+        byEpoch.set(e, { epoch: e, open: Number(c.open), high: Number(c.high),
+                         low: Number(c.low), close: Number(c.close) });
+      }
+      const oldest = Math.min.apply(null, arr.map(c => Number(c.epoch)));
+      end = oldest - 60;
+      if (arr.length < 1000) break;
+    }
+    const merged = Array.from(byEpoch.values()).sort((a, b) => a.epoch - b.epoch);
+    state.hist.set(sym, merged);
+    return merged.length;
+  }
+  function mtfFrom(c1){
+    return {
+      c1: c1.slice(-80),
+      c5: window.CORE_R.agg1m(c1, 300).slice(-60),
+      c15: window.CORE_R.agg1m(c1, 900).slice(-40),
+      c1h: window.CORE_R.agg1m(c1, 3600).slice(-50),
+      ref15: (function(){ const w = window.CORE_R.agg1m(c1, 900); return w.length >= 2 ? w[w.length - 2] : null; })()
+    };
   }
 
   function renderRows(){
     const rows = state.rows;
-    let html = "<table><thead><tr><th>#</th><th>Market</th><th>Score</th><th>Scanner</th><th>Status</th></tr></thead><tbody>";
+    let html = "<table><thead><tr><th>#</th><th>Market</th><th>Score</th><th>Side</th><th>Regime</th><th>Checks</th><th>Status</th></tr></thead><tbody>";
     if (!rows.length){
-      html += '<tr><td colspan="5" style="color:#8b949e;text-align:center;padding:20px">Scanning…</td></tr>';
+      html += '<tr><td colspan="7" style="color:#8b949e;text-align:center;padding:20px">Scanning…</td></tr>';
     }
     rows.forEach((r, i) => {
-      const q = r.ready && r.ready.passed === 4;
-      const minS = window.CORE_R.entryThreshold($("inpMinScore") ? $("inpMinScore").value : null);
-      const qEntry = q && (r.score || 0) >= minS;
-      const busy = state.inTrade && state.current && state.current.symbol === r.symbol;
-      const inCd = Date.now() < state.cooldownUntil;
+      const base = "<td><b>" + esc(r.displayName) + "</b><br><span style='color:#8b949e;font-size:11px'>" + esc(r.symbol) + "</span></td>";
+      if (r.pending){
+        html += "<tr><td>" + (i + 1) + "</td>" + base +
+          '<td colspan="5" style="color:#8b949e">loading history…</td></tr>';
+        return;
+      }
+      const c = r.checks || {};
+      const dot = v => v ? '<span style="color:#3fb950">●</span>' : '<span style="color:#484f58">○</span>';
+      const chk = [c.htf, c.sweep, c.bosChoch, c.crt].map(dot).join(" ") +
+        ' <span style="color:#484f58">|</span> ' + [c.fvgOb, c.displacement, c.momentum, c.volatility, c.payout].map(dot).join(" ");
+      const busy = state.inTrade && state.current && state.current.sig && state.current.sig.symbol === r.symbol;
       let st = "watch";
-      if (busy) st = "IN TRADE";
-      else if (qEntry && state.mode === "armed" && !state.inTrade && !inCd) st = "✓ would buy";
-      else if (q && !qEntry) st = "4/4 but score " + (r.score != null ? r.score.toFixed(1) : "–") + " < " + minS;
-      else if (qEntry) st = state.mode === "armed" ? (inCd ? "cooldown" : "qualifies") : "qualifies (disarmed)";
-      html += "<tr" + (q ? ' class="qual"' : "") + "><td>" + (i + 1) + "</td>" +
-        "<td><b>" + esc(r.displayName) + "</b><br><span style='color:#8b949e;font-size:11px'>" + esc(r.symbol) + "</span></td>" +
-        "<td>" + (r.score != null ? r.score.toFixed(1) : "–") + "</td>" +
-        "<td>" + (r.ready && r.ready.side
-            ? '<span class="chip ' + (q ? "ready" : "part") + '">' + r.ready.side + " " + r.ready.passed + "/4</span>"
-            : '<span class="chip no">–</span>') + "</td>" +
+      let cls = "";
+      if (busy){ st = "IN TRADE"; cls = ' class="qual"'; }
+      else if (r.eligible && state.mode === "armed" && !state.inTrade) st = "✓ QUALIFIED";
+      else if (r.eligible) st = state.mode === "armed" ? (Date.now() < state.cooldownUntil ? "cooldown" : "waits turn") : "qualified (disarmed)";
+      else if ((r.blocked || []).length && (r.score || 0) >= Math.max(4, state.calib.threshold - 3))
+        st = "near: " + r.blocked.slice(0, 2).join(", ");
+      else if (r.blocked && r.blocked.length) st = r.blocked[0];
+      html += "<tr" + cls + "><td>" + (i + 1) + "</td>" + base +
+        "<td><b>" + (r.score != null ? r.score : "–") + "</b>/13</td>" +
+        "<td>" + (r.side ? '<span class="chip ' + (r.eligible ? "ready" : "part") + '">' + r.side + "</span>" : '<span class="chip no">–</span>') + "</td>" +
+        "<td style='font-size:11px'>" + esc((r.regime && r.regime.type) || "–") + "</td>" +
+        "<td style='font-size:13px;letter-spacing:2px'>" + chk + "</td>" +
         "<td>" + st + "</td></tr>";
     });
     html += "</tbody></table>";
@@ -512,16 +951,35 @@ if (typeof module !== "undefined" && module.exports){
     state.sweeping = true;
     try {
       if (!state.pub || state.pub.readyState !== 1) throw new Error("socket not open");
-      const got = await Promise.all(state.symbols.map(async s => {
-        try { const { candles, prices } = await fetchSym(s);
-          return window.CORE_R.analyzeSymbol({ symbol: s.symbol, displayName: s.displayName, pip: s.pip },
-            candles, prices, Math.floor(Date.now() / 1000)); }
-        catch (e){ return null; }
-      }));
-      const rows = got.filter(r => r);
-      state.rows = window.CORE_R.rankRows(rows);
+      const now = Date.now();
+      const stale = state.symbols.filter(s => !state.hist.has(s.symbol) || (state.nextHist.get(s.symbol) || 0) < now);
+      if (stale.length){
+        await Promise.all(stale.map(async s => {
+          try { await loadHistory(s.symbol, 4); state.nextHist.set(s.symbol, Date.now() + 90000); }
+          catch (e){ log("History " + s.symbol + ": " + e.message, "w"); }
+        }));
+      }
+      const rows = [];
+      const nowSec = Math.floor(Date.now() / 1000);
+      for (const s of state.symbols){
+        const cAll = state.hist.get(s.symbol);
+        // decisions run on CLOSED bars only — drop the forming candle
+        const c = cAll ? cAll.filter(b => b.epoch + 60 <= nowSec) : null;
+        if (!c || c.length < 500){
+          rows.push({ symbol: s.symbol, displayName: s.displayName, pending: true });
+          continue;
+        }
+        const ev = window.CORE_R.evaluateICT(mtfFrom(c), payoutNetOf(s.symbol), {
+          threshold: state.calib.threshold, evMin: state.calib.evMin, wrEstimate: state.calib.wrEstimate });
+        rows.push({ symbol: s.symbol, displayName: s.displayName, score: ev.score, side: ev.side,
+          checks: ev.checks, blocked: ev.blocked, eligible: ev.eligible, regime: ev.regime,
+          ev: ev.ev, expiry: profileOf(s.symbol).expiry });
+      }
+      state.rows = rows;
       renderRows();
-      setStatus("Scanning… " + state.rows.length + " markets · updated " + new Date().toLocaleTimeString(), "ok");
+      const nEl = rows.filter(r => r.eligible).length;
+      setStatus("Scanning… " + rows.length + " markets · " + nEl + " qualified · updated " +
+        new Date().toLocaleTimeString(), "ok");
       await maybeTrade();
     } catch (e){
       log("Sweep error: " + e.message, "e");
@@ -690,9 +1148,31 @@ if (typeof module !== "undefined" && module.exports){
     if (!state.lastBal || state.lastBal <= 0){
       throw new Error("Could not read account balance — check token and account type.");
     }
-    state.money = window.CORE_R.moneyInit(state.lastBal);
+    state.risk = window.CORE_R.riskInit(state.lastBal, readRiskCfg());
     state.trades = 0; state.wins = 0;
     stats();
+  }
+
+  function readRiskCfg(){
+    const n = (id, d) => { const v = Number($(id) ? $(id).value : null); return isFinite(v) && v > 0 ? v : d; };
+    return {
+      riskPct: n("inpRisk", 0.75),
+      dailyLossPct: n("inpDailyLoss", 3),
+      dailyProfitPct: n("inpDailyProfit", 5),
+      maxConsec: n("inpMaxConsec", 3),
+      maxSession: n("inpMaxSession", 20),
+      cooldownSec: n("inpCd", 30),
+      smallMaxPct: 2
+    };
+  }
+  function saveRisk(){
+    try { localStorage.setItem("dr_robot_risk", JSON.stringify(state.risk || null)); } catch(e){}
+  }
+  function restoreRisk(){
+    try {
+      const r = JSON.parse(localStorage.getItem("dr_robot_risk") || "null");
+      if (r && r.dayKey === new Date().toDateString()) state.risk = r;
+    } catch(e){}
   }
 
   function onAuthMsg(msg){
@@ -718,21 +1198,41 @@ if (typeof module !== "undefined" && module.exports){
   async function maybeTrade(){
     if (state.mode !== "armed" || state.inTrade || !state.auth || state.auth.readyState !== 1) return;
     if (Date.now() < state.cooldownUntil) return;
-    if (isBroke(state.lastBal || 0)){
-      log("⛔ Balance below $0.35 — disarming.", "e"); setMode("scanning"); banner("<b>Balance too low for the minimum stake — auto-trade disarmed.</b> Top up and arm again."); return;
+    if (state.lastBal != null && state.lastBal < window.CORE_R.MIN_STAKE){
+      log("⛔ Balance below $0.35 minimum — disarming.", "e"); setMode("scanning");
+      banner("<b>Balance too low for the minimum stake — auto-trade disarmed.</b> Top up and arm again."); return;
     }
-    const min = window.CORE_R.entryThreshold($("inpMinScore") ? $("inpMinScore").value : null);
-    const sig = window.CORE_R.pickSignal(state.rows, min);
-    if (!sig) return;
-    // TP/SL gate BEFORE entry
-    if (window.CORE_R.tpHit(state.money, state.lastBal)){ log("🎯 Take-profit already hit — disarming.", "s"); setMode("scanning"); return; }
-    if (window.CORE_R.slHit(state.money, state.lastBal)){ log("🛑 Stop-loss already hit — disarming.", "e"); setMode("scanning"); return; }
-    window.CORE_R.moneyShrink(state.money, state.lastBal);
-    const stake = state.money.stake;
-    log("📈 SIGNAL: " + sig.displayName + " (" + sig.symbol + ") " + sig.side + " 4/4 · score " + sig.score + " → buying $" + stake.toFixed(2) + " (5t)", "s");
-    state.inTrade = true; state.current = { sig, stake, phase: "proposing" };
+    // ---- flat risk gates (day lock / consecutive losses / session cap) ----
+    if (state.risk){
+      window.CORE_R.riskClock(state.risk, state.lastBal, Date.now());
+      const rc = window.CORE_R.riskCanTrade(state.risk, Date.now());
+      if (!rc.ok){
+        if (rc.reason !== "cooldown" && state._lastSkip !== rc.reason){
+          state._lastSkip = rc.reason;
+          autoStopBanner(rc.reason);
+        }
+        return;
+      }
+      state._lastSkip = null;
+    }
+    // ---- trade-quality gate: engine eligible only, best score first ----
+    const elig = (state.rows || [])
+      .filter(r => r.eligible && profileOf(r.symbol).on)
+      .sort((a, b) => (b.score || 0) - (a.score || 0));
+    if (!elig.length) return;
+    const sig = elig[0];
+    const sf = window.CORE_R.stakeFor(state.lastBal, state.risk);
+    if (!sf.ok){
+      log("⛔ " + sf.reason, "e"); setMode("scanning");
+      banner("<b>⛔ " + sf.reason + "</b> Small-account survival mode: no trade.");
+      return;
+    }
+    log("📈 SETUP: " + sig.displayName + " (" + sig.symbol + ") " + sig.side +
+        " · score " + sig.score + "/13 · " + sig.regime.type + " · EV≈" + (sig.ev != null ? sig.ev.toFixed(3) : "—") +
+        " → stake $" + sf.stake.toFixed(2) + " (" + sig.expiry + "m)", "s");
+    state.inTrade = true; state.current = { sig, stake: sf.stake, phase: "proposing" };
     setMode("intrade");
-    try { await proposeAndBuy(sig, stake); }
+    try { await proposeAndBuy(sig, sf.stake); }
     catch (e){
       log("Trade failed: " + e.message, "e");
       state.inTrade = false; state.current = null;
@@ -748,8 +1248,8 @@ if (typeof module !== "undefined" && module.exports){
       basis: "stake",
       contract_type: sig.side,
       currency: state.currency || "USD",
-      duration: Number($("inpDur").value) || 5,
-      duration_unit: "t",
+      duration: Number(profileOf(sig.symbol).expiry) || 1,
+      duration_unit: "m",
       underlying_symbol: sig.symbol
     }, 12000);
     const prop = deepFind(p, "proposal") || p;
@@ -757,6 +1257,24 @@ if (typeof module !== "undefined" && module.exports){
     const buyTok = prop.id != null ? prop.id : (prop.token != null ? prop.token : null);
     if (price == null) throw new Error("no price in proposal: " + JSON.stringify(p).slice(0, 160));
     if (buyTok == null) throw new Error("no proposal token in: " + JSON.stringify(p).slice(0, 160));
+    // ---- payout/EV gate on the REAL proposal (before buy) ----
+    if (prop.payout != null && price > 0){
+      const net = Number(prop.payout) / Number(price) - 1;
+      const wr = state.calib.wrEstimate;
+      const ev = wr * net - (1 - wr);
+      state.current.proposalNet = round2(net * 1000) / 1000;
+      if (ev < state.calib.evMin){
+        log("✗ EV gate: net " + net.toFixed(3) + " → EV " + ev.toFixed(3) + " < min " +
+            state.calib.evMin + " — NO TRADE (payout too low for this stake).", "w");
+        state.inTrade = false; state.current = null;
+        if (state.mode === "intrade") setMode("armed");
+        state.cooldownUntil = Date.now() + 5000;
+        return;
+      }
+      const prof = profileOf(sig.symbol);
+      prof.payoutNet = round2(net * 1000) / 1000;   // remember measured payout for scans
+      state.profiles[sig.symbol] = prof; savePrefs();
+    }
     log("Proposal ok — price " + price + (prop.payout ? " · payout " + prop.payout : ""), "i");
     const b = await wsSend(state.auth, { buy: buyTok, price: String(price) }, 12000);
     const buy = deepFind(b, "buy") || b;
@@ -804,7 +1322,7 @@ if (typeof module !== "undefined" && module.exports){
 
   async function settleTrade(won, profit){
     const cur = state.current;
-    // re-query balance so TP/SL and win-reset use the exact post-settlement number
+    // re-query balance so day-lock and stake math use the exact post-settlement number
     try {
       const b = await wsSend(state.auth, { balance: 1 }, 8000);
       const nb = numBalance(b);
@@ -817,36 +1335,53 @@ if (typeof module !== "undefined" && module.exports){
       }
     }
     state.trades++;
-    if (won){ state.wins++; window.CORE_R.moneyOnWin(state.money, state.lastBal || 0); }
-    else window.CORE_R.moneyOnLose(state.money);
-    log((won ? "🏆 WON" : "💸 LOST") + " #" + (cur.contractId || "?") + " · " + (profit >= 0 ? "+" : "−") + "$" + Math.abs(profit).toFixed(2) +
-        " · streak " + state.money.streak + " · next stake $" + state.money.stake.toFixed(2), won ? "s" : "w");
+    if (won) state.wins++;
+    const pnl = round2(profit);
+    const stop = state.risk ? window.CORE_R.riskOnResult(state.risk, pnl, Date.now()) : null;
+    pushTradeLog(cur, won, pnl);
+    log((won ? "🏆 WON" : "💸 LOST") + " #" + (cur.contractId || "?") +
+        " · " + (pnl >= 0 ? "+" : "−") + "$" + Math.abs(pnl).toFixed(2) +
+        (state.risk ? " · day P/L " + (state.risk.dayPnl >= 0 ? "+" : "−") + "$" + Math.abs(state.risk.dayPnl).toFixed(2) +
+          " · consec " + state.risk.consecLosses : ""), won ? "s" : "w");
     state.inTrade = false; state.current = null;
-    state.cooldownUntil = Date.now() + (Number($("inpCd").value) || 0) * 1000;
-    if (state.lastBal == null || state.lastBal <= 0) { /* keep old */ }
-    // TP / SL
-    if (state.lastBal != null && window.CORE_R.tpHit(state.money, state.lastBal)){
-      state.sessionLossStreak = 0;
-      log("🎯 Take-profit hit — session closed. Disarming.", "s");
-      setMode("scanning"); banner("<b>🎯 Take-profit reached — auto-trade disarmed.</b> Press Arm to start a new session.");
-    } else if (state.lastBal != null && window.CORE_R.slHit(state.money, state.lastBal)){
-      state.sessionLossStreak = (state.sessionLossStreak || 0) + 1;
-      if (state.sessionLossStreak >= 2){
-        state.cooldownUntil = Date.now() + 60000;
-        log("🔴 Two losing sessions in a row —60s entry pause, disarmed.", "e");
-        setMode("scanning");
-        banner("<b>🔴 Two losing sessions in a row —60s pause.</b> The robot disarmed itself; entries stay blocked for 60s even if you re-arm. This is the bleed guard: step away, then continue.");
-      } else {
-        log("🛑 Stop-loss hit — session closed. Disarming. (loss streak:1)", "e");
-        setMode("scanning"); banner("<b>🛑 Stop-loss reached — auto-trade disarmed.</b> Press Arm to start a new session.");
-      }
-    } else if (isBroke(state.lastBal || 0)){
-      log("⛔ Balance below $0.35 — disarming.", "e"); setMode("scanning");
-      banner("<b>⛔ Balance too low for the minimum stake — auto-trade disarmed.</b>");
+    if (state.lastBal == null || state.lastBal <= 0){
+      log("⛔ Balance unusable — disarming.", "e"); setMode("scanning");
+      banner("<b>⛔ Balance too low — auto-trade disarmed.</b>");
+    } else if (stop){
+      autoStopBanner(stop); setMode("scanning");
     } else {
       setMode("armed");
     }
-    stats();
+    saveRisk(); stats();
+  }
+
+  function autoStopBanner(reason){
+    const m = {
+      daily_loss:   ["🛑 Daily loss lock — trading stopped for today.", "Open the LIVE tab tomorrow, or press RESUME (day counters kept)."],
+      daily_profit: ["🎯 Daily profit lock — stopped while ahead.", "Nice session. Press RESUME if you really want to continue."],
+      consec_loss:  ["🔴 Max consecutive losses — STOP.", "Review the LOG tab, breathe, then press RESUME."],
+      session_cap:  ["📦 Session trade cap reached.", "Press RESUME to start a new session."]
+    }[reason] || [String(reason), ""];
+    log(m[0], reason === "daily_profit" ? "s" : "e");
+    banner("<b>" + m[0] + "</b> " + m[1]);
+  }
+
+  function pushTradeLog(cur, won, pnl){
+    if (!cur || !cur.sig) return;
+    const s = cur.sig;
+    const entry = {
+      t: Date.now(), symbol: s.symbol, name: s.displayName, side: s.side, score: s.score,
+      regime: (s.regime && s.regime.type) || "?", checks: s.checks || {}, ev: s.ev,
+      net: cur.proposalNet || null, stake: cur.stake, expiry: s.expiry, won: !!won, pnl: pnl
+    };
+    state.tradeLog.push(entry);
+    if (state.tradeLog.length > 300) state.tradeLog = state.tradeLog.slice(-300);
+    savePrefs();
+    if (state.tradeLog.length >= 50 && !state._announced50){
+      state._announced50 = true;
+      log("📊 Trade log now has " + state.tradeLog.length + " entries — post-trade condition analysis unlocked (LOG tab).", "i");
+    }
+    if (typeof renderLog === "function" && $("secLog") && !$("secLog").classList.contains("hidden")) renderLog();
   }
 
   function failSafeStop(){
@@ -892,13 +1427,25 @@ if (typeof module !== "undefined" && module.exports){
               " — sessions armed below peak tend to give back. Proceed consciously.", "w");
         }
       } catch(e){}
-      if (window.CORE_R.tpHit(state.money, state.lastBal) || window.CORE_R.slHit(state.money, state.lastBal)){
-        throw new Error("Session limits already met on current balance vs start — restart to recalibrate.");
+      restoreRisk();
+      if (state.risk && state.risk.dayKey === new Date().toDateString()){
+        window.CORE_R.riskClock(state.risk, state.lastBal, Date.now());
+        if (state.risk.stopped){
+          throw new Error("Auto-stop active (" + state.risk.stopped +
+            ") — press RESUME to continue (today's counters are kept).");
+        }
+        // re-arm same day: refresh balance reference (caps derive from dayStartBal), keep counters
+        state.risk.dayStartBal = state.lastBal;
+        state.risk.riskPct = readRiskCfg().riskPct;
+      } else {
+        state.risk = window.CORE_R.riskInit(state.lastBal, readRiskCfg());
       }
+      saveRisk();
       setMode("armed");
       banner("");
-      log("🤖 ARMED — will buy the first 4/4 qualifier.", "s");
-      setStatus("ARMED — trading " + $("selAcct").value + " on first qualifying trend.", "ok");
+      log("🤖 ARMED — flat " + readRiskCfg().riskPct + "%/trade, will buy the first setup scoring ≥" +
+          state.calib.threshold + " with all critical checks green.", "s");
+      setStatus("ARMED — trading " + $("selAcct").value + " on first qualified setup.", "ok");
       await maybeTrade();
     } catch (e){
       log("Arm failed: " + e.message, "e");
@@ -938,11 +1485,212 @@ if (typeof module !== "undefined" && module.exports){
     setStatus("Stopped.", "err");
   });
 
+  /* ---------- tabs ---------- */
+  function showTab(name){
+    const map = { live: ["secLive", "btnTabLive"], lab: ["secLab", "btnTabLab"], log: ["secLog", "btnTabLog"] };
+    Object.keys(map).forEach(k => {
+      const sec = $(map[k][0]), b = $(map[k][1]);
+      if (sec) sec.classList.toggle("hidden", k !== name);
+      if (b) b.classList.toggle("on", k === name);
+    });
+    if (name === "log") renderLog();
+  }
+  $("btnTabLive") && $("btnTabLive").addEventListener("click", () => showTab("live"));
+  $("btnTabLab") && $("btnTabLab").addEventListener("click", () => showTab("lab"));
+  $("btnTabLog") && $("btnTabLog").addEventListener("click", () => showTab("log"));
+  $("btnResume") && $("btnResume").addEventListener("click", async () => {
+    try {
+      restoreRisk();
+      if (!state.risk) { log("Nothing to resume — press Arm.", "i"); return; }
+      if (state.risk.dayKey !== new Date().toDateString()){
+        state.risk = window.CORE_R.riskInit(state.lastBal, readRiskCfg());
+      } else {
+        window.CORE_R.riskResume(state.risk);
+      }
+      saveRisk();
+      if (!state.auth){ await authConnect(); }
+      setMode("armed"); banner("");
+      log("▶ RESUMED — day P/L kept (" + (state.risk.dayPnl >= 0 ? "+" : "−") + "$" +
+          Math.abs(state.risk.dayPnl).toFixed(2) + "), consecutive-loss stop cleared.", "s");
+      $("btnResume").style.display = "none";
+      await maybeTrade();
+    } catch(e){ log("Resume failed: " + e.message, "e"); }
+  });
+  // show Resume button only when a stop is active
+  const _origAutoStop = autoStopBanner;
+  autoStopBanner = function(reason){ _origAutoStop(reason); try { $("btnResume").style.display = ""; } catch(e){} };
+
+  /* ---------- LAB: real-data backtest (train/val/OOS + MC) ---------- */
+  async function runLab(){
+    const btn = $("btnRunLab"), out = $("labOut"), rep = $("labReport");
+    btn.disabled = true; rep.innerHTML = "";
+    const say = t => { out.innerHTML += esc(t) + "<br>"; out.scrollTop = out.scrollHeight; };
+    out.innerHTML = "";
+    try {
+      if (!state.pub || state.pub.readyState !== 1){ say("Connecting market socket…"); await pubConnect(); }
+      if (!state.pub || state.pub.readyState !== 1) throw new Error("market socket unavailable");
+      const days = Number($("selLabDays").value) || 7;
+      const pages = Math.min(14, Math.ceil(days * 1440 / 1000));
+      const syms = state.symbols.filter(s => profileOf(s.symbol).on);
+      if (!syms.length) throw new Error("no symbols loaded — click Scan first");
+      const expiries = [1, 2, 3, 5, 10];
+      const all = [];
+      say("Fetching " + days + "d of 1m candles (" + pages + " pages × 1000 bars) for " + syms.length + " symbols…");
+      for (const s of syms){
+        await loadHistory(s.symbol, pages);
+        state.nextHist.set(s.symbol, Date.now() + 60000);
+        const c1 = state.hist.get(s.symbol) || [];
+        say("· " + s.symbol + ": " + c1.length + " bars");
+        if (c1.length < 600){ say("  (too few bars — skipped)"); continue; }
+        const net = payoutNetOf(s.symbol);
+        const stake = Math.max((state.lastBal || 1000) * readRiskCfg().riskPct / 100, 0.35);
+        for (const exp of expiries){
+          const trades = window.CORE_R.backtestRun({
+            c1m: c1, symbol: s.symbol, net: net, expiryMin: exp, stake: stake,
+            cfg: { threshold: 8, evMin: state.calib.evMin, wrEstimate: state.calib.wrEstimate,
+                   backtestCooldownBars: exp }
+          });   // collect every setup ≥8, then sweep the threshold honestly on train
+          trades.forEach(t => all.push({ sym: s.symbol, exp: exp, score: t.score, win: t.win, pnl: t.pnl, i: t.i }));
+        }
+      }
+      if (!all.length){
+        rep.innerHTML = '<div class="warn">NO SETUPS in this range — the strict engine took zero trades. ' +
+          'Honest result: no backtest possible yet. Widen the days range or wait for live qualifying setups.</div>';
+        return;
+      }
+      say("Collected " + all.length + " candidate setups (score≥8). Sweeping threshold on TRAIN split (60%)…");
+      const n = t => (t == null ? "n/a" : t.toFixed(3));
+      const pct = x => (x == null ? "n/a" : (x * 100).toFixed(1) + "%");
+      let best = null;
+      for (const exp of expiries){
+        const list = all.filter(t => t.exp === exp);
+        if (list.length < 12){ say("expiry " + exp + "m: n=" + list.length + " (<12) — skipped"); continue; }
+        const NET = 0.886; // probe-measured payout — used for break-even/EV display (pnl is already per-symbol)
+        const th = window.CORE_R.sweepThreshold(list, NET, [8, 9, 10, 11, 12, 13], 12);
+        if (!th || th.metrics.wr < 0.56 || th.metrics.ev <= 0){
+          say("expiry " + exp + "m: no threshold passes the TRAIN gate (WR≥56% & EV>0, n≥12) — skipped");
+          continue;
+        }
+        const sub = list.filter(t => t.score >= th.threshold);
+        const { train, val, oos } = window.CORE_R.splitChrono(sub, 0.6, 0.2);
+        const valM = val.length ? window.CORE_R.metricsOf(val, NET, state.lastBal || 1000) : null;
+        const oosM = oos.length ? window.CORE_R.metricsOf(oos, NET, state.lastBal || 1000) : null;
+        say("expiry " + exp + "m → th*=" + th.threshold + " · train WR " + pct(th.metrics.wr) + " EV " + n(th.metrics.ev) +
+            " n=" + th.metrics.n + " · val n=" + val.length + (valM ? " EV " + n(valM.ev) : "") +
+            " · OOS n=" + oos.length + (oosM ? " WR " + pct(oosM.wr) + " EV " + n(oosM.ev) + " PF " + n(oosM.pf) : ""));
+        // expiry is CHOSEN on validation (never OOS — no leakage); OOS stays a pure report
+        if (val.length >= 3 && valM && valM.ev > 0 && (!best || valM.ev > best.valM.ev))
+          best = { exp, th, NET, sub, train, val, oos, valM, oosM };
+      }
+      if (!best){
+        rep.innerHTML = '<div class="warn">NO expiry×threshold combo passed the train gate at ≥56% WR / positive EV — ' +
+          '<b>no parameters applied</b>. The engine keeps its current threshold. This is the honest out-of-sample discipline: ' +
+          'when the data does not validate an edge, we do not trade it.</div>';
+        return;
+      }
+      const mc = window.CORE_R.monteCarlo(best.oos, best.NET, state.lastBal || 1000, 400, 42);
+      state.lab = { best: best, mc: mc, nAll: all.length, generated: Date.now() };
+      const flags = [];
+      if (mc.pctProfitable < 0.6) flags.push("only " + pct(mc.pctProfitable) + " of resamples profitable");
+      if (mc.finalP10 < 0) flags.push("10th-pct finish negative ($" + mc.finalP10.toFixed(2) + ")");
+      if (mc.ddP90 > (state.lastBal || 1000) * 0.12) flags.push("90th-pct drawdown $" + mc.ddP90.toFixed(2) + " >12% of balance");
+      const fragile = flags.length ? "YES — fragile (" + flags.join("; ") + ")" : "NO — robust across 400 resamples";
+      rep.innerHTML =
+        '<div class="lrow"><b>Recommended expiry:</b> ' + best.exp + 'm &nbsp;·&nbsp; <b>Threshold (train-swept, val-selected):</b> ' + best.th.threshold + '/13</div>' +
+        '<table><thead><tr><th>Split</th><th>n</th><th>WR</th><th>EV/trade</th><th>PF</th><th>Max DD</th><th>Break-even WR</th></tr></thead><tbody>' +
+        [["Train 60%", best.train], ["Validation 20%", best.val], ["OOS 20% (report only)", best.oos]].map(row => {
+          const m = row[1].length ? window.CORE_R.metricsOf(row[1], best.NET, state.lastBal || 1000) : null;
+          if (!m) return "<tr><td>" + row[0] + '</td><td colspan="6" style="color:#8b949e">n too small</td></tr>';
+          return "<tr><td>" + row[0] + "</td><td>" + row[1].length + "</td><td>" + pct(m.wr) + "</td><td>" + n(m.ev) +
+            "</td><td>" + n(m.pf) + "</td><td>" + pct(m.maxDD) + "</td><td>" + pct(m.breakeven) + "</td></tr>";
+        }).join("") + "</tbody></table>" +
+        '<div class="lrow"><b>Monte Carlo (400× OOS):</b> median finish ' + (mc.finalP50 >= 0 ? "+$" : "−$") + Math.abs(mc.finalP50).toFixed(2) +
+        " · 10th pct $" + mc.finalP10.toFixed(2) + " · P(Profitable)=" + pct(mc.pctProfitable) +
+        " · median maxDD $" + mc.ddP50.toFixed(2) + " · <b>fragile: " + fragile + "</b></div>" +
+        '<button id="btnApplyLab" class="apply">Apply recommended expiry + threshold to robot</button> ' +
+        '<span class="dim">Demo only — past data never guarantees future results.</span>';
+      $("btnApplyLab").addEventListener("click", () => {
+        state.calib.threshold = best.th.threshold;
+        state.calib.source = "lab " + new Date().toISOString().slice(0, 16).replace("T", " ");
+        state.symbols.forEach(s => { const p = profileOf(s.symbol); p.expiry = best.exp; state.profiles[s.symbol] = p; });
+        if ($("inpMinScore")) $("inpMinScore").value = String(best.th.threshold);
+        if ($("inpExpiry")) $("inpExpiry").value = String(best.exp);
+        savePrefs();
+        log("🧪 LAB applied: expiry " + best.exp + "m, threshold " + best.th.threshold +
+            "/13 (train-swept, val-selected; OOS n=" + best.oos.length + " reported).", "s");
+        showTab("live");
+      });
+      say("Done.");
+    } catch(e){
+      rep.innerHTML = '<div class="warn">Lab error: ' + esc(e.message) + "</div>";
+      log("Lab error: " + e.message, "e");
+    } finally { btn.disabled = false; }
+  }
+  $("btnRunLab") && $("btnRunLab").addEventListener("click", runLab);
+  $("inpExpiry") && $("inpExpiry").addEventListener("change", () => {
+    const v = Number($("inpExpiry").value) || 1;
+    state.symbols.forEach(s => { const p = profileOf(s.symbol); p.expiry = v; state.profiles[s.symbol] = p; });
+    savePrefs();
+    log("Expiry default → " + v + "m for all markets (per-market override lives in profiles).", "i");
+  });
+
+  /* ---------- LOG: full trade history + post-50 condition analysis ---------- */
+  function renderLog(){
+    const area = $("logArea"); if (!area) return;
+    const all = state.tradeLog;
+    $("logCount") && ($("logCount").textContent = String(all.length));
+    if (!all.length){ area.innerHTML = '<div class="dim">No trades logged yet. Every opened contract (win or lose) is recorded here with its setup score, regime, checks, payout and result.</div>'; return; }
+    let html = "";
+    if (all.length >= 50){
+      const keys = ["htf", "sweep", "bosChoch", "crt", "fvgOb", "displacement", "momentum", "volatility", "payout"];
+      const wrOf = arr => { const w = arr.filter(t => t.won).length; return arr.length ? (w / arr.length * 100).toFixed(1) + "% (n=" + arr.length + ")" : "n/a"; };
+      html += '<div class="lrow"><b>Post-trade condition analysis — n=' + all.length + ' (≥50 unlocked)</b><br>' +
+        '<span class="dim">Win rate of taken trades split by each condition at entry. Small n per cell → directional only, not proof.</span></div>';
+      html += '<table><thead><tr><th>Condition</th><th>WR when TRUE</th><th>WR when FALSE</th><th>Delta</th></tr></thead><tbody>';
+      keys.forEach(k => {
+        const y = all.filter(t => t.checks && t.checks[k]);
+        const nArr = all.filter(t => t.checks && !t.checks[k]);
+        const wy = y.length ? y.filter(t => t.won).length / y.length : null;
+        const wn = nArr.length ? nArr.filter(t => t.won).length / nArr.length : null;
+        const d = (wy != null && wn != null) ? ((wy - wn) * 100).toFixed(1) + "pp" : "n/a";
+        html += "<tr><td>" + k + "</td><td>" + wrOf(y) + "</td><td>" + wrOf(nArr) + "</td><td>" + d + "</td></tr>";
+      });
+      html += "</tbody></table>";
+      const byRegime = {};
+      all.forEach(t => { (byRegime[t.regime] = byRegime[t.regime] || []).push(t); });
+      html += '<div class="lrow"><b>By regime:</b> ' + Object.keys(byRegime).map(r => r + " → " + wrOf(byRegime[r])).join(" · ") + "</div>";
+      const byExp = {};
+      all.forEach(t => { (byExp[t.expiry] = byExp[t.expiry] || []).push(t); });
+      html += '<div class="lrow"><b>By expiry:</b> ' + Object.keys(byExp).map(e => e + "m → " + wrOf(byExp[e])).join(" · ") + "</div>";
+      const m = window.CORE_R.metricsOf(all, all[all.length - 1].net || 0.886, state.lastBal || 1000);
+      if (m) html += '<div class="lrow"><b>Whole log:</b> WR ' + (m.wr * 100).toFixed(1) + "% · EV " + m.ev.toFixed(3) +
+        " · PF " + m.pf.toFixed(2) + " · break-even needed " + (m.breakeven * 100).toFixed(1) + "% · edge " +
+        (m.edge >= 0 ? "+" : "") + (m.edge * 100).toFixed(1) + "pp</div>";
+      html += '<div class="lrow dim">Statistical discipline: change parameters only when this table shows a clear, ' +
+        'sample-backed reason — and re-validate in the LAB before applying.</div>';
+    } else {
+      html += '<div class="dim">Condition analysis unlocks at 50 logged trades (have ' + all.length + ').</div>';
+    }
+    html += '<table><thead><tr><th>#</th><th>Time</th><th>Market</th><th>Side</th><th>Score</th><th>Regime</th><th>Expiry</th><th>Stake</th><th>Net%</th><th>Result</th></tr></thead><tbody>';
+    all.slice(-100).reverse().forEach((t, i) => {
+      html += "<tr" + (t.won ? ' style="color:#3fb950"' : ' style="color:#f85149"') + "><td>" + (all.length - i) +
+        "</td><td>" + new Date(t.t).toLocaleString() + "</td><td>" + esc(t.name) + "</td><td>" + t.side +
+        "</td><td>" + t.score + "/13</td><td>" + esc(t.regime) + "</td><td>" + t.expiry + "m</td><td>$" +
+        (t.stake || 0).toFixed(2) + "</td><td>" + (t.net != null ? Math.round(t.net * 100) + "%" : "—") +
+        "</td><td>" + (t.won ? "WIN +" : "LOSS −") + "$" + Math.abs(t.pnl).toFixed(2) + "</td></tr>";
+    });
+    html += "</tbody></table>";
+    area.innerHTML = html;
+  }
+
   // restore settings
   try {
+    loadPrefs();
+    restoreRisk();
     $("inpToken").value = localStorage.getItem("dr_robot_token") || "";
     $("inpApp").value = localStorage.getItem("dr_robot_app") || "1089";
     $("selAcct").value = localStorage.getItem("dr_robot_acct") || "demo";
+    if ($("inpMinScore")) $("inpMinScore").value = String(state.calib.threshold);
   } catch(e){}
   setMode("disarmed"); stats();
 
