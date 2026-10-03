@@ -61,7 +61,7 @@ check("window.CORE_R exported", sandbox.window.CORE_R && typeof sandbox.window.C
   String(sandbox.window.CORE_R));
 
 const need = ["CONFIG", "evaluateICT", "htfBiasOf", "regimeOf", "chaseBlock", "crtOf",
-  "pipDecimals", "lastDigitOf", "parityState", "digitStatsOf", "evaluateDigits",
+  "pipDecimals", "lastDigitOf", "parityState", "digitStatsOf", "evaluateDigits", "riseFallBatch",
   "riskInit", "stakeFor", "riskCanTrade", "riskOnResult", "riskResume", "MIN_STAKE",
   "agg1m", "metricsOf", "splitChrono", "sweepThreshold", "monteCarlo", "backtestRun",
   "analyzeSymbol", "normalizeActiveSymbols", "round2", "botReadyState"];

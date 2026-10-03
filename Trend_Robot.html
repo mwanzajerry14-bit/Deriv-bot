@@ -134,6 +134,7 @@
     <div class="grid">
       <div><label class="f">Strategy</label><select id="selStrategy">
         <option value="ict" selected>ICT/SMC trends (13-point)</option>
+        <option value="rf">Rise/Fall — classic trend (score ≥90)</option>
         <option value="digits">Digits — Even/Odd · Matches · Differs</option>
         <option value="both">Both — best EV wins</option></select>
         <div class="hint">All strategies share the same flat-stake risk locks.</div></div>
@@ -149,6 +150,8 @@
       <div><label class="f">Sweep every (ms)</label><input type="number" id="inpSweep" value="2500" min="1500" step="500"></div>
       <div><label class="f">Min setup score (of 13, OOS-calibrated)</label><input type="number" id="inpMinScore" value="11" min="4" max="13">
         <div class="hint">Critical checks (HTF bias, sweep, BOS/CHOCH, CRT) are mandatory regardless. Threshold is validated in the Backtest Lab — 11 is a placeholder until then.</div></div>
+      <div><label class="f">Rise/Fall gate (0–100, batch score)</label><input type="number" id="inpRfScore" value="90" min="50" max="100">
+        <div class="hint">Classic engine: 4/4 live checks AND the batch-percentile trend score must clear this vs the current watchlist (90 = top decile — your original bot’s gate).</div></div>
     </div>
     <div class="stats" id="stats">
       <div class="stat"><div class="k">Balance</div><div class="v" id="stBal">—</div></div>
@@ -203,7 +206,7 @@
   </div>
 
   <footer>
-    <b>How it works:</b> paginated 1m candles feed an ICT/SMC engine (1H/15m HTF bias · liquidity sweep · BOS/CHOCH · displacement · FVG/obstacle · CRT ref-candle · premium/discount · momentum/volume · regime + no-chase guards). Critical checks (HTF, sweep, BOS/CHOCH, CRT) are all mandatory; a 13-point score must clear the OOS-validated threshold; the live proposal's real payout must clear the EV gate. ICT entries are 1–10m options; the optional <b>Digits strategy</b> trades Even/Odd (your XML parity rule: anchor 10 ticks back + ≥6/10 agreement), Matches and Differs on 5-tick contracts from a last-1000-tick histogram — share floors plus the same real-payout EV gate. Every trade is flat 0.5–1% of balance (never increases after a loss) under a daily loss lock, daily profit lock and consecutive-loss stop. <b>WHEN THERE IS NO CLEAR EDGE: NO TRADE.</b><br>
+    <b>How it works:</b> paginated 1m candles feed an ICT/SMC engine (1H/15m HTF bias · liquidity sweep · BOS/CHOCH · displacement · FVG/obstacle · CRT ref-candle · premium/discount · momentum/volume · regime + no-chase guards). Critical checks (HTF, sweep, BOS/CHOCH, CRT) are all mandatory; a 13-point score must clear the OOS-validated threshold; the live proposal's real payout must clear the EV gate. ICT entries are 1–10m options; the <b>Rise/Fall strategy</b> is the classic trend engine — 4/4 live checks (body, tick, stream) plus a batch-percentile score ≥90 vs the current watchlist, exactly like your original bot; the optional <b>Digits strategy</b> trades Even/Odd (your XML parity rule: anchor 10 ticks back + ≥6/10 agreement), Matches and Differs on 5-tick contracts from a last-1000-tick histogram — share floors plus the same real-payout EV gate. Every trade is flat 0.5–1% of balance (never increases after a loss) under a daily loss lock, daily profit lock and consecutive-loss stop. <b>WHEN THERE IS NO CLEAR EDGE: NO TRADE.</b><br>
     <b>Safety:</b> STOP never leaves new entries; balance &lt; $0.35 → DO NOT TRADE; token lives only in your browser — revoke it when finished. No profit claims: losses are unavoidable and this is a demo tool, not financial advice. Positive expectancy is only ever claimed from transparent recorded samples.
   </footer>
 </div>
@@ -631,6 +634,33 @@ function evaluateDigits(ticks, pip, cfg){
   }
   return out;
 }
+/* ============ RISE/FALL (classic trend: legacy analyzer batch score + 4/4 live checks) ============
+   rows: [{ symbol, rf: { metrics, ready } }] — fills rf.score (batch percentile mix,
+   same math as rankRows but kept off r.score so ICT stays untouched) and rfSignal
+   when ready.passed === 4 AND score >= minScore. evOf(row) supplies the scan-time
+   EV estimate; the LIVE proposal's real payout re-checks it before buying. */
+function riseFallBatch(rows, minScore, evOf){
+  const keys = ["trend", "strong", "eff", "tickmom", "range"];
+  const live = (rows || []).filter(r => r && r.rf && r.rf.metrics);
+  if (!live.length) return rows;
+  const min = (Number(minScore) > 0 && isFinite(Number(minScore))) ? Number(minScore) : CONFIG.entryScore;
+  const pcts = {};
+  for (const k of keys) pcts[k] = percentileRanks(live.map(r => r.rf.metrics[k]));
+  live.forEach((r, idx) => {
+    let s = 0;
+    for (const k of keys) s += CONFIG.weights[k] * pcts[k][idx];
+    r.rf.score = Math.round(s * 10) / 10;
+    r.rf.minScore = min;
+    const rd = r.rf.ready;
+    const ok = !!(rd && rd.passed === 4 && rd.side && r.rf.score >= min);
+    r.rfSignal = ok ? {
+      strategy: "rise-fall", side: rd.side, short: rd.side, score: r.rf.score,
+      checks: rd.checks, regime: { type: rd.side === "CALL" ? "rising" : "falling" },
+      ev: evOf ? round2(evOf(r) * 1000) / 1000 : null, eligible: true
+    } : null;
+  });
+  return rows;
+}
 /* HTF bias: 1h structure + 15m structure must agree */
 function htfBiasOf(c1h, c15m){
   const a = structureOf(c1h), b = structureOf(c15m);
@@ -865,7 +895,7 @@ function backtestRun(o){
 if (typeof window !== "undefined"){
   const _eng = { atrOf, swingsOf, structureOf, dealingRange, zoneAt, lastFVG, displacementAt,
     sweepNear, crtOf, regimeOf, chaseBlock, momentumOf, htfBiasOf, evaluateICT,
-    pipDecimals, lastDigitOf, parityState, digitStatsOf, evaluateDigits,
+    pipDecimals, lastDigitOf, parityState, digitStatsOf, evaluateDigits, riseFallBatch,
     MIN_STAKE, riskInit, stakeFor, riskClock, riskCanTrade, riskOnResult, riskResume,
     agg1m, metricsOf, splitChrono, sweepThreshold, monteCarlo, backtestRun };
   window.CORE_R = Object.assign({ CONFIG, round2, sign, computeMetrics, botReadyState, percentileRanks, rankRows,
@@ -874,7 +904,7 @@ if (typeof window !== "undefined"){
 if (typeof module !== "undefined" && module.exports){
   const _eng = { atrOf, swingsOf, structureOf, dealingRange, zoneAt, lastFVG, displacementAt,
     sweepNear, crtOf, regimeOf, chaseBlock, momentumOf, htfBiasOf, evaluateICT,
-    pipDecimals, lastDigitOf, parityState, digitStatsOf, evaluateDigits,
+    pipDecimals, lastDigitOf, parityState, digitStatsOf, evaluateDigits, riseFallBatch,
     MIN_STAKE, riskInit, stakeFor, riskClock, riskCanTrade, riskOnResult, riskResume,
     agg1m, metricsOf, splitChrono, sweepThreshold, monteCarlo, backtestRun };
   module.exports = Object.assign({ CONFIG, round2, sign, computeMetrics, botReadyState, percentileRanks, rankRows,
@@ -1105,13 +1135,33 @@ if (typeof module !== "undefined" && module.exports){
           "<td>" + st + "</td></tr>";
         return;
       }
-      // ---------- ICT view (unchanged shape; digit signals overlay in "both") ----------
+      // ---------- Rise/Fall view ----------
+      if (strat === "rf" && r.rf){
+        const a = r.rf;
+        const rd = a.ready || {};
+        const chk = (rd.checks || [false, false, false, false]).map(dot).join(" ");
+        if (!busy){
+          if (r.activeSig){ st = "✓ QUALIFIED (" + r.activeSig.short + ")"; cls = ' class="qual"'; }
+          else if (rd.side && a.score != null && a.score < (a.minScore || 90))
+            st = "near: score " + a.score + " < " + (a.minScore || 90);
+          else if (rd.side) st = "watch: " + (rd.passed || 0) + "/4 checks";
+          else st = "watch: " + (rd.note || "no direction");
+        }
+        html += "<tr" + cls + "><td>" + (i + 1) + "</td>" + base +
+          "<td><b>" + (a.score != null ? a.score : "–") + "</b></td>" +
+          "<td>" + (rd.side ? '<span class="chip ' + (r.activeSig ? "ready" : "part") + '">' + rd.side + "</span>" : '<span class="chip no">–</span>') + "</td>" +
+          "<td style='font-size:11px'>" + (a.metrics ? "t" + Math.round(a.metrics.trend) + " · m" + Math.round(a.metrics.tickmom) : "–") + "</td>" +
+          "<td style='font-size:13px;letter-spacing:2px'>" + chk + "</td>" +
+          "<td>" + st + "</td></tr>";
+        return;
+      }
+      // ---------- ICT view (unchanged shape; Rise/Fall/digit signals overlay in "both") ----------
       const c = r.checks || {};
       const chk = [c.htf, c.sweep, c.bosChoch, c.crt].map(dot).join(" ") +
         ' <span style="color:#484f58">|</span> ' + [c.fvgOb, c.displacement, c.momentum, c.volatility, c.payout].map(dot).join(" ");
-      const digOverlay = strat === "both" && r.activeSig && r.activeSig.strategy === "digits";
+      const offSig = strat === "both" && r.activeSig && r.activeSig.strategy !== "ict";
       if (!busy){
-        if (digOverlay){ st = "✓ QUALIFIED (" + r.activeSig.short + ")"; cls = ' class="qual"'; }
+        if (offSig){ st = "✓ QUALIFIED (" + r.activeSig.short + ")"; cls = ' class="qual"'; }
         else if (r.eligible && state.mode === "armed" && !state.inTrade) st = "✓ QUALIFIED";
         else if (r.eligible) st = state.mode === "armed" ? (Date.now() < state.cooldownUntil ? "cooldown" : "waits turn") : "qualified (disarmed)";
         else if ((r.blocked || []).length && (r.score || 0) >= Math.max(4, state.calib.threshold - 3))
@@ -1119,7 +1169,7 @@ if (typeof module !== "undefined" && module.exports){
         else if (r.blocked && r.blocked.length) st = r.blocked[0];
         else if (r.dig && r.dig.signals.length && strat === "both") st = "EV gate: " + r.dig.signals.map(x => x.short).join("/");
       }
-      const sideChip = (digOverlay || (r.activeSig && r.activeSig.strategy === "digits"))
+      const sideChip = (offSig || (r.activeSig && r.activeSig.strategy !== "ict"))
         ? '<span class="chip ready">' + esc(r.activeSig.short) + "</span>"
         : (r.side ? '<span class="chip ' + (r.eligible ? "ready" : "part") + '">' + r.side + "</span>" : '<span class="chip no">–</span>');
       html += "<tr" + cls + "><td>" + (i + 1) + "</td>" + base +
@@ -1136,19 +1186,24 @@ if (typeof module !== "undefined" && module.exports){
 
   /* best qualifying signal for the active strategy (EV decides between engines) */
   function pickActive(row, strat){
-    const ictSig = (row.eligible && row.side && strat !== "digits")
+    const ictSig = (row.eligible && row.side && (strat === "ict" || strat === "both"))
       ? { strategy: "ict", side: row.side, short: row.side, score: row.score,
           ev: row.ev, regime: row.regime, checks: row.checks, expiry: row.expiry }
       : null;
+    const rfSig = (strat === "rf" || strat === "both") ? (row.rfSignal || null) : null;
     let digSig = null;
-    if (strat !== "ict" && row.dig){
+    if ((strat === "digits" || strat === "both") && row.dig){
       const el = row.dig.signals.filter(x => x.eligible);
       if (el.length) digSig = el.slice().sort((a, b) => (b.ev || 0) - (a.ev || 0))[0];
     }
     if (strat === "ict") return ictSig;
     if (strat === "digits") return digSig;
-    if (ictSig && digSig) return (digSig.ev > ictSig.ev) ? digSig : ictSig;
-    return ictSig || digSig;
+    if (strat === "rf") return rfSig;
+    // both: highest scan-time EV wins (ties → the first listed)
+    let best = ictSig;
+    if (rfSig && (!best || (rfSig.ev || 0) > (best.ev || 0))) best = rfSig;
+    if (digSig && (!best || (digSig.ev || 0) > (best.ev || 0))) best = digSig;
+    return best;
   }
 
   async function sweep(){
@@ -1160,6 +1215,10 @@ if (typeof module !== "undefined" && module.exports){
       const strat = readStrategy();
       const wantCandles = strat !== "digits";
       const wantTicks = strat !== "ict";
+      const wantDig = strat === "digits" || strat === "both";
+      const wantRF = strat === "rf" || strat === "both";
+      // Rise/Fall reads the LIVE (forming) candle — keep candle snapshots fresh
+      const histTTL = (strat === "rf" || strat === "both") ? 20000 : 90000;
       const stale = state.symbols.filter(s => {
         const cDue = wantCandles && (!state.hist.has(s.symbol) || (state.nextHist.get(s.symbol) || 0) < now);
         const tDue = wantTicks && (!state.ticks.has(s.symbol) || (state.nextTicks.get(s.symbol) || 0) < now);
@@ -1182,7 +1241,7 @@ if (typeof module !== "undefined" && module.exports){
                 // full 4-page load only when cold or gap >30m; routine refresh = 1 top-up page
                 const cold = !have.length || (Date.now() / 1000 - newest) > 1800;
                 await loadHistory(sym, cold ? 4 : 1);
-                state.nextHist.set(sym, Date.now() + 90000);
+                state.nextHist.set(sym, Date.now() + histTTL);
                 state.histFail.delete(sym);
               } catch (e){
                 const n = (state.histFail.get(sym) || 0) + 1;
@@ -1241,6 +1300,7 @@ if (typeof module !== "undefined" && module.exports){
       for (const s of state.symbols){
         const row = { symbol: s.symbol, displayName: s.displayName, pip: s.pip };
         let haveAny = false;
+        const tps = state.ticks.get(s.symbol);
         if (wantCandles){
           const cAll = state.hist.get(s.symbol);
           // decisions run on CLOSED bars only — drop the forming candle
@@ -1253,17 +1313,29 @@ if (typeof module !== "undefined" && module.exports){
             haveAny = true;
           }
         }
-        if (wantTicks){
-          const t = state.ticks.get(s.symbol);
-          if (t && t.length >= 11){
-            row.dig = window.CORE_R.evaluateDigits(t, s.pip, digCfg);
+        if (wantDig && tps && tps.length >= 11){
+          row.dig = window.CORE_R.evaluateDigits(tps, s.pip, digCfg);
+          haveAny = true;
+        }
+        if (wantRF){
+          const cRaw = state.hist.get(s.symbol);   // raw array: Rise/Fall needs the forming candle
+          if (cRaw && cRaw.length >= 3 && tps && tps.length >= 11){
+            row.rf = window.CORE_R.analyzeSymbol(s, cRaw, tps, nowSec);
             haveAny = true;
           }
         }
-        row.activeSig = pickActive(row, strat);
         row.pending = !haveAny;
         rows.push(row);
       }
+      // Rise/Fall scores are batch-relative (percentile vs the current watchlist) — needs ALL rows first
+      if (wantRF){
+        const rfRows = rows.filter(r => r.rf);
+        if (rfRows.length){
+          window.CORE_R.riseFallBatch(rfRows, readRfScore(), r =>
+            state.calib.wrEstimate * payoutNetOf(r.symbol) - (1 - state.calib.wrEstimate));
+        }
+      }
+      rows.forEach(r => { r.activeSig = pickActive(r, strat); });
       state.rows = rows;
       renderRows();
       const nEl = rows.filter(r => r.activeSig).length;
@@ -1456,7 +1528,11 @@ if (typeof module !== "undefined" && module.exports){
   }
   function readStrategy(){
     const v = $("selStrategy") ? String($("selStrategy").value || "") : "";
-    return (v === "digits" || v === "both") ? v : "ict";
+    return (v === "digits" || v === "both" || v === "rf") ? v : "ict";
+  }
+  function readRfScore(){
+    const v = Number($("inpRfScore") ? $("inpRfScore").value : null);
+    return isFinite(v) && v >= 50 && v <= 100 ? v : window.CORE_R.CONFIG.entryScore;  // hygiene: never 0
   }
   function readDigCfg(){
     const n = (id, d) => { const v = Number($(id) ? $(id).value : null); return isFinite(v) && v > 0 ? v : d; };
@@ -1531,7 +1607,11 @@ if (typeof module !== "undefined" && module.exports){
       ? { strategy: "digits", symbol: row0.symbol, displayName: row0.displayName,
           kind: as.kind, contract: as.contract, digit: as.digit, side: as.side, short: as.short,
           label: as.label, wr: as.wr, ev: as.ev, ticks: readDigCfg().ticks }
-      : { strategy: "ict", symbol: row0.symbol, displayName: row0.displayName,
+      : as.strategy === "rise-fall"
+        ? { strategy: "rise-fall", symbol: row0.symbol, displayName: row0.displayName,
+            side: as.side, score: as.score, ev: as.ev, regime: as.regime, checks: as.checks,
+            expiry: profileOf(row0.symbol).expiry }
+        : { strategy: "ict", symbol: row0.symbol, displayName: row0.displayName,
           side: row0.side, score: row0.score, ev: row0.ev, regime: row0.regime,
           checks: row0.checks, expiry: row0.expiry };
     const sf = window.CORE_R.stakeFor(state.lastBal, state.risk);
@@ -1544,9 +1624,13 @@ if (typeof module !== "undefined" && module.exports){
         (sig.strategy === "digits"
           ? sig.label + " · EV≈" + (sig.ev != null ? sig.ev.toFixed(3) : "—") +
             " → stake $" + sf.stake.toFixed(2) + " (" + sig.ticks + "t)"
-          : sig.side + " · score " + sig.score + "/13 · " + sig.regime.type +
-            " · EV≈" + (sig.ev != null ? sig.ev.toFixed(3) : "—") +
-            " → stake $" + sf.stake.toFixed(2) + " (" + sig.expiry + "m)"), "s");
+          : sig.strategy === "rise-fall"
+            ? sig.side + " · score " + sig.score + "/100 · " + sig.regime.type +
+              " · EV≈" + (sig.ev != null ? sig.ev.toFixed(3) : "—") +
+              " → stake $" + sf.stake.toFixed(2) + " (" + sig.expiry + "m)"
+            : sig.side + " · score " + sig.score + "/13 · " + sig.regime.type +
+              " · EV≈" + (sig.ev != null ? sig.ev.toFixed(3) : "—") +
+              " → stake $" + sf.stake.toFixed(2) + " (" + sig.expiry + "m)"), "s");
     state.inTrade = true; state.current = { sig, stake: sf.stake, phase: "proposing" };
     setMode("intrade");
     try { await proposeAndBuy(sig, sf.stake); }
@@ -1772,9 +1856,11 @@ if (typeof module !== "undefined" && module.exports){
       log("🤖 ARMED — flat " + readRiskCfg().riskPct + "%/trade, " +
           (stratA === "digits"
             ? "digit signals (parity ≥" + readDigCfg().minAgree + "/10 + match/diff shares) gated by the real-payout EV."
-            : stratA === "both"
-              ? "ICT ≥" + state.calib.threshold + " or digit signals — best EV wins, under the real-payout EV gate."
-              : "will buy the first setup scoring ≥" + state.calib.threshold + " with all critical checks green."), "s");
+            : stratA === "rf"
+              ? "Rise/Fall trend gate — score ≥" + readRfScore() + " with 4/4 live checks, real-payout EV gate."
+              : stratA === "both"
+                ? "ICT ≥" + state.calib.threshold + ", Rise/Fall ≥" + readRfScore() + " or digit signals — best EV wins, under the real-payout EV gate."
+                : "will buy the first setup scoring ≥" + state.calib.threshold + " with all critical checks green."), "s");
       setStatus("ARMED — trading " + $("selAcct").value + " on first qualified setup.", "ok");
       await maybeTrade();
     } catch (e){
@@ -2011,7 +2097,9 @@ if (typeof module !== "undefined" && module.exports){
         "</td><td>" + new Date(t.t).toLocaleString() + "</td><td>" + esc(t.name) + "</td><td>" + esc(String(t.side || "—")) +
         "</td><td>" + (t.st === "digits"
           ? (t.dig != null ? "d" + t.dig : "—")
-          : (t.score != null ? t.score + "/13" : "—")) +
+          : (t.st === "rise-fall"
+            ? (t.score != null ? t.score + "/100" : "—")
+            : (t.score != null ? t.score + "/13" : "—"))) +
         "</td><td>" + esc(t.regime) + "</td><td>" +
         (t.expiry != null ? (String(t.expiry).indexOf("t") >= 0 ? t.expiry : t.expiry + "m") : "—") + "</td><td>$" +
         (t.stake || 0).toFixed(2) + "</td><td>" + (t.net != null ? Math.round(t.net * 100) + "%" : "—") +

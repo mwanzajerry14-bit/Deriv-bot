@@ -311,5 +311,49 @@ ok("evaluateDigits: n<200 → no match/diff even at 30% share",
 const e5 = C.evaluateDigits(mkTicks(allEven), 0.001, { minAgree: 8 });
 ok("evaluateDigits: minAgree cfg respected", e5.parity.ready === true && e5.parity.agree === 10, JSON.stringify(e5.parity));
 
+/* ---------- Rise/Fall (classic trend: batch-percentile score + 4/4 live checks) ---------- */
+const now0 = Math.floor(Date.now() / 1000);
+const mkBar = (o, c, h, l, ageMin) => ({ epoch: now0 - ageMin * 60, open: o, high: h, low: l, close: c });
+// botReadyState: direction comes from the last CLOSED candle + live/tick/stream agreement
+const bullC = [mkBar(100, 101, 101.5, 99.5, 2), mkBar(101, 103, 103.5, 100.5, 1), mkBar(103, 105, 105.5, 102.5, 0)];
+const upPrices = Array.from({ length: 20 }, (_, i) => String(100 + i));
+const br1 = C.botReadyState(bullC, upPrices, now0 + 30, true);
+ok("rise/fall: bullish story → 4/4 CALL", br1.passed === 4 && br1.side === "CALL", JSON.stringify(br1));
+const flatC = [mkBar(100, 100, 100.5, 99.5, 1), mkBar(100, 100, 100.5, 99.5, 0)];
+const br2 = C.botReadyState(flatC, upPrices, now0, true);
+ok("rise/fall: flat close → no side", br2.side === null && br2.passed === 0, JSON.stringify(br2));
+// riseFallBatch: batch-percentile mix (weights .25/.20/.20/.15/.20), gate, 4/4 requirement
+const mkRF = (id, metrics, ready) => ({ symbol: id, rf: { metrics, ready } });
+const metWin = { trend: 96, strong: 80, eff: 70, tickmom: 50, range: 0.2 };
+const metLose = { trend: 50, strong: 0, eff: 0, tickmom: 50, range: 0.1 };
+const ready4 = side => ({ side, passed: 4, checks: [true, true, true, true], note: "" });
+const rfRows = [
+  mkRF("WIN", metWin, ready4("CALL")),
+  mkRF("LOSE", metLose, { side: null, passed: 0, checks: [false, false, false, false], note: "flat close" })
+];
+C.riseFallBatch(rfRows, 90, () => 0.037);
+ok("rise/fall: dominant row scores 92.5 (100,100,100,50 tie,100)",
+  rfRows[0].rf.score === 92.5, String(rfRows[0].rf.score));
+ok("rise/fall: 4/4 CALL row → rise-fall signal with EV",
+  rfRows[0].rfSignal && rfRows[0].rfSignal.side === "CALL" &&
+  rfRows[0].rfSignal.strategy === "rise-fall" && rfRows[0].rfSignal.ev === 0.037 &&
+  rfRows[0].rfSignal.regime.type === "rising", JSON.stringify(rfRows[0].rfSignal));
+ok("rise/fall: not-ready row never signals", rfRows[1].rfSignal === null, JSON.stringify(rfRows[1].rf));
+const alone3 = [mkRF("A", metWin, { side: "CALL", passed: 3, checks: [true, false, true, true], note: "" })];
+C.riseFallBatch(alone3, 90, () => 0.05);
+ok("rise/fall: score 100 but only 3/4 checks → NO signal",
+  alone3[0].rf.score === 100 && alone3[0].rfSignal === null, JSON.stringify(alone3[0].rf));
+const tieRows = [mkRF("T1", metLose, ready4("CALL")), mkRF("T2", metLose, ready4("PUT"))];
+C.riseFallBatch(tieRows, 0, () => 0.05);   // 0 must fall back to the 90 default
+ok("rise/fall: minScore 0 → fallback 90 (tied rows at 50 don't qualify)",
+  tieRows[0].rf.score === 50 && tieRows[1].rf.score === 50 &&
+  tieRows[0].rfSignal === null && tieRows[1].rfSignal === null,
+  JSON.stringify(tieRows.map(r => r.rf.score)));
+const putRows = [mkRF("P", metWin, ready4("PUT")), mkRF("Q", metLose, ready4("CALL"))];
+C.riseFallBatch(putRows, 90, () => 0.05);
+ok("rise/fall: PUT signal direction + falling regime",
+  putRows[0].rfSignal && putRows[0].rfSignal.side === "PUT" &&
+  putRows[0].rfSignal.regime.type === "falling", JSON.stringify(putRows[0].rfSignal));
+
 console.log(fails === 0 ? `\nICT ENGINE TEST PASSED ✓ (${passes} checks)` : `\n${fails} FAILURES ✗ (${passes} passed)`);
 process.exit(fails === 0 ? 0 : 1);

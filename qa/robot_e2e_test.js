@@ -63,8 +63,22 @@ function candlesFlat() {
 const FIX = { R_10: candlesR10(), R_50: candlesFlat() };
 
 /* page ticks_history candles (count caps at 1000 → app paginates via end=epoch) */
+function rfTail(sym){
+  const cur = Math.floor(Date.now() / 1000 / 60) * 60;
+  if (sym !== "R_10") return [{ epoch: cur, open: 500, high: 500.5, low: 499.5, close: 500 }];
+  const bars = [];
+  let px = FIX.R_10[FIX.R_10.length - 1].close;
+  for (let k = 19; k >= 1; k--){
+    const o = px, c = px + 1.2;
+    bars.push({ epoch: cur - 60 * k, open: o, high: c + 0.3, low: o - 0.2, close: c });
+    px = c;
+  }
+  bars.push({ epoch: cur, open: px, high: px + 0.9, low: px - 0.1, close: px + 0.7 });  // forming
+  return bars;
+}
 function pageCandles(sym, end) {
-  const all = FIX[sym] || [];
+  let all = FIX[sym] || [];
+  if (MockWS.rfMode) all = all.concat(rfTail(sym));   // fresh forming candle for Rise/Fall isLive
   const maxEnd = end === "latest" || end == null ? Infinity : Number(end);
   const eligible = all.filter(c => c.epoch <= maxEnd);
   return eligible.slice(-1000);
@@ -100,8 +114,8 @@ function makeMockWS() {
       if (m.ticks_history != null && m.style === "candles" && m.granularity === 60){
         MockWS.counts = MockWS.counts || {};
         MockWS.counts[m.ticks_history] = (MockWS.counts[m.ticks_history] || 0) + 1;
-        // injected failure: R_50 history always times out → exercises deferred-log + backoff path
-        if (m.ticks_history === "R_50")
+        // injected failure (scenario 1 only): R_50 history times out → exercises deferred-log + backoff path
+        if (m.ticks_history === "R_50" && MockWS.failR50)
           return withRid({ error: { code: "RateLimit", message: "timeout: simulated history failure" } });
         return withRid({ candles: pageCandles(m.ticks_history, m.end) });
       }
@@ -111,6 +125,8 @@ function makeMockWS() {
         MockWS.counts = MockWS.counts || {};
         MockWS.counts["ticks:" + m.ticks_history] = (MockWS.counts["ticks:" + m.ticks_history] || 0) + 1;
         MockWS.lastTickReq = m;   // live API rejects style=ticks without end — regression-locked below
+        if (MockWS.tickMode === "rf")   // rising stream: tick > closed.close + streamUp for CALL
+          return withRid({ history: { prices: Array.from({ length: 500 }, (_, i) => String(1000 + i * 0.5)) } });
         const digits = m.ticks_history === "R_10" ? evenRunDigits() : uniformDigits();
         return withRid({ history: { prices: digits.map(d => priceFor(m.ticks_history, d)) } });
       }
@@ -220,6 +236,9 @@ function buildSandbox() {
   MockWS.counts = {};   // per-scenario request counters
   MockWS.lastProposal = null;
   MockWS.lastTickReq = null;
+  MockWS.rfMode = false;
+  MockWS.tickMode = null;
+  MockWS.failR50 = false;
   const els = {};
   const store = {};
   const sandbox = {
@@ -271,6 +290,7 @@ async function tradeFlow(els, tag) {
   /* ================= Scenario 1: classic token, direct authorize ================= */
   console.log("--- scenario 1: direct authorize (classic token)");
   const s1 = buildSandbox();
+  MockWS.failR50 = true;   // scenario 1: R_50 candles fail → deferred-log + backoff assertions
   s1.els.inpToken.value = TOKEN;
   await s1.els.btnScan._handlers.click();
   await sleep(400);
@@ -381,6 +401,40 @@ async function tradeFlow(els, tag) {
     s3.els.modePill.textContent === "SCANNING" && s3.els.btnResume.style.display === "",
     s3.els.modePill.textContent + " resume=" + s3.els.btnResume.style.display);
   check("s3: stats 1 win recorded", s3.els.stTW.textContent === "1 (1/0)", s3.els.stTW.textContent);
+
+  // ---------- scenario 4: Rise/Fall strategy (classic trend engine) ----------
+  console.log("\n--- scenario 4: rise/fall mode (batch score ≥90, 4/4 live checks)");
+  const s4 = buildSandbox();
+  MockWS.rfMode = true;    // fresh forming candle + bullish closed tail → isLive + 4/4 CALL checks
+  MockWS.tickMode = "rf";  // rising tick stream (tick > closed.close, streamUp)
+  s4.els.selStrategy = mkEl();
+  s4.els.selStrategy.value = "rf";
+  s4.els.inpToken.value = TOKEN;
+  await s4.els.btnScan._handlers.click();
+  await sleep(500);
+  await s4.els.btnArm._handlers.click();
+  await sleep(700);
+  const l4 = s4.els.log.innerHTML;
+  check("s4: ARMED rise/fall copy (gate 90 + 4/4 live checks)",
+    /Rise\/Fall trend gate — score ≥90 with 4\/4 live checks, real-payout EV gate\./.test(l4),
+    l4.slice(-450));
+  check("s4: CALL setup with batch score /100 ≥90",
+    /SETUP: Volatility 10 Index \(R_10\) CALL · score 9[0-9](\.[0-9])?\/100 · rising · EV≈[0-9.]+ → stake \$7\.50 \(1m\)/.test(l4),
+    l4.slice(-700));
+  check("s4: R_50 (flat candles) never set up", !/SETUP:.*R_50/.test(l4), l4.slice(-700));
+  const prop4 = MockWS.lastProposal;
+  check("s4: proposal is classic CALL minutes, no barrier",
+    prop4 && prop4.contract_type === "CALL" && prop4.duration_unit === "m" && prop4.barrier == null,
+    JSON.stringify(prop4));
+  check("s4: settlement WON +$6.65", /WON #987654 · \+\$6\.65 · day P\/L \+\$6\.65/.test(l4), l4.slice(-500));
+  check("s4: trade logged with st=rise-fall", /"st":"rise-fall"/.test(s4.store.dr_robot_log || ""),
+    (s4.store.dr_robot_log || "").slice(0, 300));
+  check("s4: still ARMED after win (profit lock not hit)", s4.els.modePill.textContent === "ARMED",
+    s4.els.modePill.textContent);
+  s4.els.btnStop._handlers.click();
+  check("s4: STOP works", s4.els.modePill.textContent === "STOPPED", s4.els.modePill.textContent);
+  MockWS.rfMode = false;
+  MockWS.tickMode = null;
 
   console.log(failures === 0 ? "\nROBOT E2E TEST PASSED ✓" : `\n${failures} FAILURES ✗`);
   process.exit(failures === 0 ? 0 : 1);
