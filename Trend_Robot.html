@@ -639,11 +639,12 @@ function evaluateDigits(ticks, pip, cfg){
    same math as rankRows but kept off r.score so ICT stays untouched) and rfSignal
    when ready.passed === 4 AND score >= minScore. evOf(row) supplies the scan-time
    EV estimate; the LIVE proposal's real payout re-checks it before buying. */
-function riseFallBatch(rows, minScore, evOf){
+function riseFallBatch(rows, minScore, evOf, evMin){
   const keys = ["trend", "strong", "eff", "tickmom", "range"];
   const live = (rows || []).filter(r => r && r.rf && r.rf.metrics);
   if (!live.length) return rows;
   const min = (Number(minScore) > 0 && isFinite(Number(minScore))) ? Number(minScore) : CONFIG.entryScore;
+  const evFloor = evMin != null ? evMin : 0.02;
   const pcts = {};
   for (const k of keys) pcts[k] = percentileRanks(live.map(r => r.rf.metrics[k]));
   live.forEach((r, idx) => {
@@ -652,11 +653,14 @@ function riseFallBatch(rows, minScore, evOf){
     r.rf.score = Math.round(s * 10) / 10;
     r.rf.minScore = min;
     const rd = r.rf.ready;
-    const ok = !!(rd && rd.passed === 4 && rd.side && r.rf.score >= min);
+    const ev = evOf ? round2(evOf(r) * 1000) / 1000 : null;
+    // signal needs 4/4 live checks + score gate + scan-time EV floor (real quote when measured)
+    const ok = !!(rd && rd.passed === 4 && rd.side && r.rf.score >= min &&
+                  (ev == null || ev >= evFloor));
     r.rfSignal = ok ? {
       strategy: "rise-fall", side: rd.side, short: rd.side, score: r.rf.score,
       checks: rd.checks, regime: { type: rd.side === "CALL" ? "rising" : "falling" },
-      ev: evOf ? round2(evOf(r) * 1000) / 1000 : null, eligible: true
+      ev: ev, eligible: true
     } : null;
   });
   return rows;
@@ -924,6 +928,7 @@ if (typeof module !== "undefined" && module.exports){
     risk: null, symbols: [], rows: [],
     hist: new Map(), nextHist: new Map(), histFail: new Map(), reconnAt: 0,
     ticks: new Map(), nextTicks: new Map(), tickFail: new Map(),
+    measNet: new Map(),   // real measured payouts per symbol|expiry (10 min TTL at scan)
     inTrade: false, current: null, cooldownUntil: 0,
     trades: 0, wins: 0, started: false,
     calib: { threshold: 11, wrEstimate: 0.55, evMin: 0.02, source: "default" },
@@ -1144,6 +1149,8 @@ if (typeof module !== "undefined" && module.exports){
           if (r.activeSig){ st = "✓ QUALIFIED (" + r.activeSig.short + ")"; cls = ' class="qual"'; }
           else if (rd.side && a.score != null && a.score < (a.minScore || 90))
             st = "near: score " + a.score + " < " + (a.minScore || 90);
+          else if (rd.side && rd.passed === 4 && a.score >= (a.minScore || 90))
+            st = "EV gate: payout too low (re-probes ~10m)";
           else if (rd.side) st = "watch: " + (rd.passed || 0) + "/4 checks";
           else st = "watch: " + (rd.note || "no direction");
         }
@@ -1306,7 +1313,8 @@ if (typeof module !== "undefined" && module.exports){
           // decisions run on CLOSED bars only — drop the forming candle
           const c = cAll ? cAll.filter(b => b.epoch + 60 <= nowSec) : null;
           if (c && c.length >= 500){
-            const ev = window.CORE_R.evaluateICT(mtfFrom(c), payoutNetOf(s.symbol), {
+            const netExp = measNetOf(s.symbol, profileOf(s.symbol).expiry) || payoutNetOf(s.symbol);
+            const ev = window.CORE_R.evaluateICT(mtfFrom(c), netExp, {
               threshold: state.calib.threshold, evMin: state.calib.evMin, wrEstimate: state.calib.wrEstimate });
             Object.assign(row, { score: ev.score, side: ev.side, checks: ev.checks, blocked: ev.blocked,
               eligible: ev.eligible, regime: ev.regime, ev: ev.ev, expiry: profileOf(s.symbol).expiry });
@@ -1331,8 +1339,11 @@ if (typeof module !== "undefined" && module.exports){
       if (wantRF){
         const rfRows = rows.filter(r => r.rf);
         if (rfRows.length){
-          window.CORE_R.riseFallBatch(rfRows, readRfScore(), r =>
-            state.calib.wrEstimate * payoutNetOf(r.symbol) - (1 - state.calib.wrEstimate));
+          window.CORE_R.riseFallBatch(rfRows, readRfScore(), r => {
+            const exp = profileOf(r.symbol).expiry;
+            const net = measNetOf(r.symbol, exp) || payoutNetOf(r.symbol);
+            return state.calib.wrEstimate * net - (1 - state.calib.wrEstimate);
+          }, state.calib.evMin);
         }
       }
       rows.forEach(r => { r.activeSig = pickActive(r, strat); });
@@ -1534,6 +1545,11 @@ if (typeof module !== "undefined" && module.exports){
     const v = Number($("inpRfScore") ? $("inpRfScore").value : null);
     return isFinite(v) && v >= 50 && v <= 100 ? v : window.CORE_R.CONFIG.entryScore;  // hygiene: never 0
   }
+  /* freshest REAL proposal measurement for symbol|expiry (ms TTL) — beats cached estimates */
+  function measNetOf(sym, dur){
+    const m = state.measNet && state.measNet.get(sym + "|" + dur);
+    return (m && Date.now() - m.t < 600000) ? m.net : null;
+  }
   function readDigCfg(){
     const n = (id, d) => { const v = Number($(id) ? $(id).value : null); return isFinite(v) && v > 0 ? v : d; };
     return {
@@ -1644,73 +1660,97 @@ if (typeof module !== "undefined" && module.exports){
 
   async function proposeAndBuy(sig, stake){
     const isDig = sig.strategy === "digits";
-    const req = {
-      proposal: 1,
-      amount: stake.toFixed(2),
-      basis: "stake",
-      contract_type: isDig ? sig.contract : sig.side,
-      currency: state.currency || "USD",
-      duration: isDig ? sig.ticks : Number(profileOf(sig.symbol).expiry) || 1,
-      duration_unit: isDig ? "t" : "m",
-      underlying_symbol: sig.symbol
-    };
-    if (isDig && (sig.kind === "match" || sig.kind === "diff")) req.barrier = String(sig.digit);
-    const p = await wsSend(state.auth, req, 12000);
-    const prop = deepFind(p, "proposal") || p;
-    const price = prop.ask_price != null ? prop.ask_price : prop.price;
-    const buyTok = prop.id != null ? prop.id : (prop.token != null ? prop.token : null);
-    if (price == null) throw new Error("no price in proposal: " + JSON.stringify(p).slice(0, 160));
-    if (buyTok == null) throw new Error("no proposal token in: " + JSON.stringify(p).slice(0, 160));
-    // ---- payout/EV gate on the REAL proposal (before buy) ----
-    if (prop.payout != null && price > 0){
-      const net = Number(prop.payout) / Number(price) - 1;
-      const wr = sig.wr != null ? sig.wr : state.calib.wrEstimate;
-      const ev = wr * net - (1 - wr);
-      state.current.proposalNet = round2(net * 1000) / 1000;
-      if (ev < state.calib.evMin){
-        log("✗ EV gate: net " + net.toFixed(3) + " → EV " + ev.toFixed(3) + " < min " +
-            state.calib.evMin + " — NO TRADE (payout too low for this stake).", "w");
-        state.inTrade = false; state.current = null;
-        if (state.mode === "intrade") setMode("armed");
-        state.cooldownUntil = Date.now() + 5000;
-        return;
-      }
-      if (!isDig){   // digit payouts differ per contract type — never pollute the ICT profile
-        const prof = profileOf(sig.symbol);
-        prof.payoutNet = round2(net * 1000) / 1000;   // remember measured payout for scans
-        state.profiles[sig.symbol] = prof; savePrefs();
-      }
-    }
-    log("Proposal ok — price " + price + (prop.payout ? " · payout " + prop.payout : ""), "i");
-    const b = await wsSend(state.auth, { buy: buyTok, price: String(price) }, 12000);
-    const buy = deepFind(b, "buy") || b;
-    const cid = buy.contract_id != null ? buy.contract_id : (buy.id != null ? buy.id : deepFind(b, "contract_id"));
-    if (cid == null) throw new Error("no contract id in buy: " + JSON.stringify(b).slice(0, 160));
-    state.current.contractId = cid;
-    state.current.phase = "open";
-    log("✅ OPEN #" + cid + " · " + sig.side + " " + sig.symbol + " $" + Number(buy.buy_price != null ? buy.buy_price : stake).toFixed(2) +
-        (buy.payout ? " · pays $" + Number(buy.payout).toFixed(2) : ""), "s");
-    // subscribe settlement updates
-    try {
-      await wsSend(state.auth, { proposal_open_contract: 1, contract_id: cid, subscribe: 1 }, 10000);
-    } catch(e){
-      log("Contract subscription: " + e.message + " — will poll once", "w");
-      try { const once = await wsSend(state.auth, { proposal_open_contract: 1, contract_id: cid }, 10000); handlePoc(once.proposal_open_contract || once); } catch(e2){}
-    }
-    // safety net: if nothing settles in 60s, poll once, then disarm on still-unknown
-    clearTimeout(state.settleTimer);
-    state.settleTimer = setTimeout(async () => {
-      if (state.inTrade && state.current){
-        try {
-          const r = await wsSend(state.auth, { proposal_open_contract: 1, contract_id: state.current.contractId }, 10000);
-          handlePoc(r.proposal_open_contract || r);
-        } catch(e){}
-        if (state.inTrade){
-          log("⚠️ Settlement unknown after timeout — STOPPING auto-trade for safety. Check the contract in your Deriv dashboard.", "e");
-          failSafeStop();
+    // candidate durations: the selected expiry first, then shortest→longest. Payouts vary
+    // sharply by duration (live quotes at 5m ran ~0.78 net while 1m can pay far better),
+    // so a poor quote at one expiry must not kill an otherwise-valid setup.
+    const candidates = isDig ? [sig.ticks]
+      : [Number(profileOf(sig.symbol).expiry) || 1, 1, 2, 3, 5, 10]
+          .filter((v, i, a) => a.indexOf(v) === i);
+    for (let ci = 0; ci < candidates.length; ci++){
+      const dur = candidates[ci];
+      const req = {
+        proposal: 1,
+        amount: stake.toFixed(2),
+        basis: "stake",
+        contract_type: isDig ? sig.contract : sig.side,
+        currency: state.currency || "USD",
+        duration: dur,
+        duration_unit: isDig ? "t" : "m",
+        underlying_symbol: sig.symbol
+      };
+      if (isDig && (sig.kind === "match" || sig.kind === "diff")) req.barrier = String(sig.digit);
+      const p = await wsSend(state.auth, req, 12000);
+      const prop = deepFind(p, "proposal") || p;
+      const price = prop.ask_price != null ? prop.ask_price : prop.price;
+      const buyTok = prop.id != null ? prop.id : (prop.token != null ? prop.token : null);
+      if (price == null) throw new Error("no price in proposal: " + JSON.stringify(p).slice(0, 160));
+      if (buyTok == null) throw new Error("no proposal token in: " + JSON.stringify(p).slice(0, 160));
+      // ---- payout/EV gate on the REAL proposal (before buy) ----
+      if (prop.payout != null && price > 0){
+        const net = Number(prop.payout) / Number(price) - 1;
+        const wr = sig.wr != null ? sig.wr : state.calib.wrEstimate;
+        const ev = wr * net - (1 - wr);
+        state.current.proposalNet = round2(net * 1000) / 1000;
+        if (!isDig){
+          // remember the REAL measurement per symbol+expiry (used by scans for 10 min)
+          state.measNet.set(sig.symbol + "|" + dur, { net: state.current.proposalNet, t: Date.now() });
+        }
+        if (ev < state.calib.evMin){
+          const more = ci < candidates.length - 1;
+          const u = isDig ? "t" : "m";
+          if (more){
+            log("✗ EV gate: " + dur + u + " net " + net.toFixed(3) + " → EV " + ev.toFixed(3) +
+                " < min " + state.calib.evMin + " — probing " + candidates[ci + 1] + u + "…", "w");
+            continue;
+          }
+          log("✗ EV gate: best net " + net.toFixed(3) + " → EV " + ev.toFixed(3) + " < min " +
+              state.calib.evMin + (candidates.length > 1
+                ? " — NO TRADE (payout too low at every expiry). Payouts vary by duration; the scan re-probes automatically in ~10 min."
+                : " — NO TRADE (payout too low for this stake)."), "w");
+          state.inTrade = false; state.current = null;
+          if (state.mode === "intrade") setMode("armed");
+          state.cooldownUntil = Date.now() + 15000;
+          return;
+        }
+        if (!isDig){   // digit payouts differ per contract type — never pollute the ICT profile
+          const prof = profileOf(sig.symbol);
+          prof.payoutNet = round2(net * 1000) / 1000;   // remember measured payout for scans
+          state.profiles[sig.symbol] = prof; savePrefs();
         }
       }
-    }, 60000);
+      log("Proposal ok — price " + price + (prop.payout ? " · payout " + prop.payout : "") +
+          (ci > 0 ? " (" + dur + (isDig ? "t" : "m") + " after EV probe)" : ""), "i");
+      const b = await wsSend(state.auth, { buy: buyTok, price: String(price) }, 12000);
+      const buy = deepFind(b, "buy") || b;
+      const cid = buy.contract_id != null ? buy.contract_id : (buy.id != null ? buy.id : deepFind(b, "contract_id"));
+      if (cid == null) throw new Error("no contract id in buy: " + JSON.stringify(b).slice(0, 160));
+      state.current.contractId = cid;
+      state.current.phase = "open";
+      log("✅ OPEN #" + cid + " · " + sig.side + " " + sig.symbol + " $" + Number(buy.buy_price != null ? buy.buy_price : stake).toFixed(2) +
+          (buy.payout ? " · pays $" + Number(buy.payout).toFixed(2) : ""), "s");
+      // subscribe settlement updates
+      try {
+        await wsSend(state.auth, { proposal_open_contract: 1, contract_id: cid, subscribe: 1 }, 10000);
+      } catch(e){
+        log("Contract subscription: " + e.message + " — will poll once", "w");
+        try { const once = await wsSend(state.auth, { proposal_open_contract: 1, contract_id: cid }, 10000); handlePoc(once.proposal_open_contract || once); } catch(e2){}
+      }
+      // safety net: if nothing settles in 60s, poll once, then disarm on still-unknown
+      clearTimeout(state.settleTimer);
+      state.settleTimer = setTimeout(async () => {
+        if (state.inTrade && state.current){
+          try {
+            const r = await wsSend(state.auth, { proposal_open_contract: 1, contract_id: state.current.contractId }, 10000);
+            handlePoc(r.proposal_open_contract || r);
+          } catch(e){}
+          if (state.inTrade){
+            log("⚠️ Settlement unknown after timeout — STOPPING auto-trade for safety. Check the contract in your Deriv dashboard.", "e");
+            failSafeStop();
+          }
+        }
+      }, 60000);
+      return;
+    }
   }
 
   let settleSeen = false;

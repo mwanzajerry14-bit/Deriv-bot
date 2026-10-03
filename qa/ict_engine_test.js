@@ -354,6 +354,13 @@ C.riseFallBatch(putRows, 90, () => 0.05);
 ok("rise/fall: PUT signal direction + falling regime",
   putRows[0].rfSignal && putRows[0].rfSignal.side === "PUT" &&
   putRows[0].rfSignal.regime.type === "falling", JSON.stringify(putRows[0].rfSignal));
+const evBlocked = [mkRF("E", metWin, ready4("CALL"))];
+C.riseFallBatch(evBlocked, 90, () => -0.02);
+ok("rise/fall: scan EV floor rejects (4/4 + score 100 but ev −0.02 → no signal)",
+  evBlocked[0].rf.score === 100 && evBlocked[0].rfSignal === null, JSON.stringify(evBlocked[0].rf));
+const evEdge = [mkRF("F", metWin, ready4("CALL"))];
+C.riseFallBatch(evEdge, 90, () => 0.02);
+ok("rise/fall: EV exactly at the floor passes", !!evEdge[0].rfSignal, JSON.stringify(evEdge[0].rfSignal));
 
 console.log(fails === 0 ? `\nICT ENGINE TEST PASSED ✓ (${passes} checks)` : `\n${fails} FAILURES ✗ (${passes} passed)`);
 process.exit(fails === 0 ? 0 : 1);

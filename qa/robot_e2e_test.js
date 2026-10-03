@@ -148,6 +148,8 @@ function makeMockWS() {
       }
       if (m.proposal != null) {
         MockWS.lastProposal = m;
+        MockWS.proposals = MockWS.proposals || [];
+        MockWS.proposals.push({ d: m.duration, u: m.duration_unit, c: m.contract_type });
         const DIG = ["DIGITEVEN", "DIGITODD", "DIGITMATCH", "DIGITDIFF"];
         if (DIG.indexOf(m.contract_type) >= 0) {
           // digit contract: tick duration, barrier required for match/diff
@@ -169,7 +171,9 @@ function makeMockWS() {
                    Number(m.amount) > 0;
         if (!ok) return withRid({ msg_type: "proposal", error: { code: "InputValidationFailed", message: "unexpected proposal fields: " + JSON.stringify(m) } });
         const price = Number(m.amount);
-        const payout = r2(price * (1 + NET));
+        // gatePayouts mode (scenario 4): the 1m quote pays terribly (0.78 net) — forces the EV probe
+        const pNet = (MockWS.gatePayouts && Number(m.duration) === 1) ? 0.78 : NET;
+        const payout = r2(price * (1 + pNet));
         return withRid({ msg_type: "proposal", proposal: { id: "32d2ec97-f568-6f7f-38c8-b1fda4275f32", ask_price: price, payout } });
       }
       if (m.buy != null) {
@@ -239,6 +243,8 @@ function buildSandbox() {
   MockWS.rfMode = false;
   MockWS.tickMode = null;
   MockWS.failR50 = false;
+  MockWS.gatePayouts = false;
+  MockWS.proposals = [];
   const els = {};
   const store = {};
   const sandbox = {
@@ -407,13 +413,14 @@ async function tradeFlow(els, tag) {
   const s4 = buildSandbox();
   MockWS.rfMode = true;    // fresh forming candle + bullish closed tail → isLive + 4/4 CALL checks
   MockWS.tickMode = "rf";  // rising tick stream (tick > closed.close, streamUp)
+  MockWS.gatePayouts = true;  // 1m quotes pay 0.78 net → the EV gate must probe to 2m before buying
   s4.els.selStrategy = mkEl();
   s4.els.selStrategy.value = "rf";
   s4.els.inpToken.value = TOKEN;
   await s4.els.btnScan._handlers.click();
   await sleep(500);
   await s4.els.btnArm._handlers.click();
-  await sleep(700);
+  await sleep(1200);
   const l4 = s4.els.log.innerHTML;
   check("s4: ARMED rise/fall copy (gate 90 + 4/4 live checks)",
     /Rise\/Fall trend gate — score ≥90 with 4\/4 live checks, real-payout EV gate\./.test(l4),
@@ -422,10 +429,18 @@ async function tradeFlow(els, tag) {
     /SETUP: Volatility 10 Index \(R_10\) CALL · score 9[0-9](\.[0-9])?\/100 · rising · EV≈[0-9.]+ → stake \$7\.50 \(1m\)/.test(l4),
     l4.slice(-700));
   check("s4: R_50 (flat candles) never set up", !/SETUP:.*R_50/.test(l4), l4.slice(-700));
+  check("s4: 1m EV-gate rejection probes to 2m (real-quote net 0.780 → EV −0.021)",
+    /EV gate: 1m net 0\.780 → EV -0\.021 < min 0\.02 — probing 2m…/.test(l4), l4.slice(-900));
+  check("s4: proposal order [1, 2] — probe tried durations in sequence",
+    MockWS.proposals.map(p => p.d).join(",") === "1,2",
+    JSON.stringify(MockWS.proposals));
   const prop4 = MockWS.lastProposal;
-  check("s4: proposal is classic CALL minutes, no barrier",
-    prop4 && prop4.contract_type === "CALL" && prop4.duration_unit === "m" && prop4.barrier == null,
+  check("s4: bought the probed 2m CALL minutes, no barrier",
+    prop4 && prop4.contract_type === "CALL" && prop4.duration_unit === "m" &&
+    Number(prop4.duration) === 2 && prop4.barrier == null,
     JSON.stringify(prop4));
+  check("s4: buy log notes the EV probe suffix", l4.includes("(2m after EV probe)"), l4.slice(-900));
+  check("s4: probe did not double-buy (exactly one OPEN)", (l4.match(/OPEN #987654/g) || []).length === 1, l4.slice(-700));
   check("s4: settlement WON +$6.65", /WON #987654 · \+\$6\.65 · day P\/L \+\$6\.65/.test(l4), l4.slice(-500));
   check("s4: trade logged with st=rise-fall", /"st":"rise-fall"/.test(s4.store.dr_robot_log || ""),
     (s4.store.dr_robot_log || "").slice(0, 300));
