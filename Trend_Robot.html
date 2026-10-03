@@ -1045,9 +1045,11 @@ if (typeof module !== "undefined" && module.exports){
     }
     return (state.hist.get(sym) || []).length;
   }
-  /* latest 1000 ticks — digit strategies (parity + histogram) */
+  /* latest 1000 ticks — digit strategies (parity + histogram).
+     NOTE: the public endpoint REJECTS style=ticks without an explicit `end`
+     (InputValidationFailed: "end Missing property") — always send end:"latest". */
   async function loadTicks(sym){
-    const r = await wsSend(state.pub, { ticks_history: sym, style: "ticks", count: 1000 });
+    const r = await wsSend(state.pub, { ticks_history: sym, style: "ticks", count: 1000, end: "latest" });
     const prices = (r.history && r.history.prices) || [];
     if (!prices.length) throw new Error("no ticks");
     state.ticks.set(sym, prices.slice(-1000));
@@ -1165,6 +1167,7 @@ if (typeof module !== "undefined" && module.exports){
       });
       if (stale.length){
         const hFails = [], tFails = [];
+        let hErr = "", tErr = "";
         let sockDead = false, allTimeout = 0;
         // max 2 symbols in flight — a 13×4 parallel burst starves the socket (every request timed out live)
         for (let i = 0; i < stale.length; i += 2){
@@ -1187,6 +1190,7 @@ if (typeof module !== "undefined" && module.exports){
                 // escalating backoff: a failing symbol must NOT retry every 2.5s sweep
                 state.nextHist.set(sym, Date.now() + Math.min(120000, 15000 * n));
                 hFails.push(sym);
+                hErr = hErr || e.message;
                 if (/socket not open/i.test(e.message)) sockDead = true;
                 else if (/timeout/i.test(e.message)) allTimeout++;
               }
@@ -1201,6 +1205,7 @@ if (typeof module !== "undefined" && module.exports){
                 state.tickFail.set(sym, n);
                 state.nextTicks.set(sym, Date.now() + Math.min(60000, 15000 * n));
                 tFails.push(sym);
+                tErr = tErr || e.message;
                 if (/socket not open/i.test(e.message)) sockDead = true;
                 else if (/timeout/i.test(e.message)) allTimeout++;
               }
@@ -1210,12 +1215,12 @@ if (typeof module !== "undefined" && module.exports){
         if (hFails.length){
           log("History deferred: " + hFails.length + "/" + stale.length +
               " symbol(s) failed — backoff active (" + hFails.slice(0, 4).join(", ") +
-              (hFails.length > 4 ? ", …" : "") + ")", "w");
+              (hFails.length > 4 ? ", …" : "") + ")" + (hErr ? " — " + hErr.slice(0, 110) : ""), "w");
         }
         if (tFails.length){
           log("Ticks deferred: " + tFails.length + "/" + stale.length +
               " symbol(s) failed — backoff active (" + tFails.slice(0, 4).join(", ") +
-              (tFails.length > 4 ? ", …" : "") + ")", "w");
+              (tFails.length > 4 ? ", …" : "") + ")" + (tErr ? " — " + tErr.slice(0, 110) : ""), "w");
         }
         // self-heal: if EVERY request timed out or the socket is closed, reconnect once (throttled 60s)
         if ((sockDead || (allTimeout === stale.length && stale.length >= 2)) &&

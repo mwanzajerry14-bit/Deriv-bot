@@ -110,6 +110,7 @@ function makeMockWS() {
       if (m.ticks_history != null && m.style === "ticks"){
         MockWS.counts = MockWS.counts || {};
         MockWS.counts["ticks:" + m.ticks_history] = (MockWS.counts["ticks:" + m.ticks_history] || 0) + 1;
+        MockWS.lastTickReq = m;   // live API rejects style=ticks without end — regression-locked below
         const digits = m.ticks_history === "R_10" ? evenRunDigits() : uniformDigits();
         return withRid({ history: { prices: digits.map(d => priceFor(m.ticks_history, d)) } });
       }
@@ -218,6 +219,7 @@ const htmlIds = new Set([...html.matchAll(/id="([A-Za-z0-9_]+)"/g)].map(m => m[1
 function buildSandbox() {
   MockWS.counts = {};   // per-scenario request counters
   MockWS.lastProposal = null;
+  MockWS.lastTickReq = null;
   const els = {};
   const store = {};
   const sandbox = {
@@ -350,6 +352,10 @@ async function tradeFlow(els, tag) {
     ((MockWS.counts || {})["ticks:R_10"] || 0) === 1 &&
     ((MockWS.counts || {})["ticks:R_50"] || 0) === 1 &&
     !((MockWS.counts || {}).R_10), JSON.stringify(MockWS.counts));
+  check("s3: tick request carries end=\"latest\" (live API rejects missing end)",
+    MockWS.lastTickReq && MockWS.lastTickReq.end === "latest" &&
+    MockWS.lastTickReq.style === "ticks" && MockWS.lastTickReq.count === 1000,
+    JSON.stringify(MockWS.lastTickReq));
   await s3.els.btnArm._handlers.click();
   await sleep(700);
   const l3 = s3.els.log.innerHTML;
