@@ -95,7 +95,7 @@
       <div>
         <label class="f">App ID</label>
         <input type="text" id="inpApp" value="1089">
-        <div class="hint"><b>Not needed for normal use</b> — direct token mode needs no App ID. Only for the REST fallback: a registered PAT-app ID from <a href="https://developers.deriv.com" target="_blank" rel="noopener">developers.deriv.com</a> (1089 is rejected there).</div>
+        <div class="hint"><b>Required for pat_ tokens.</b> Copy your application's App ID from the <a href="https://developers.deriv.com" target="_blank" rel="noopener">developers.deriv.com</a> dashboard — <b>1089 is a legacy placeholder</b> the new API rejects.</div>
       </div>
       <div>
         <label class="f">Account ID override (optional)</label>
@@ -658,6 +658,11 @@ if (typeof module !== "undefined" && module.exports){
     localStorage.setItem("dr_robot_app", appId);
     localStorage.setItem("dr_robot_acct", acctType);
     setStatus("Authenticating (" + acctType + ")…");
+    if (/^pat_/i.test(token)){
+      log("PAT detected — direct WS mode doesn't accept PATs; using REST OTP flow (App ID required).", "i");
+      try { await authViaOtp(token, appId, acctType); return; }
+      catch(e){ throw new Error("REST OTP (PAT): " + e.message); }
+    }
     let directErr = null;
     try {
       await authDirect(token, acctType);
@@ -904,10 +909,9 @@ if (typeof module !== "undefined" && module.exports){
       } else if (/does not match selected|no .* account/i.test(e.message)){
         hint = "<b>Account mismatch:</b> the token's account doesn't match the Account selector. Switch the selector (Demo/Real) to the account the token belongs to.";
       } else if (/Invalid application/i.test(e.message)){
-        hint = "<b>REST fallback rejected the App ID</b> — legacy IDs (like 1089) don't work there.<br>" +
-          "Fix the <b>token</b> instead so direct mode succeeds (see journal for the direct-mode error), or register a PAT app at <b>developers.deriv.com</b> and paste its App ID.";
+        hint = "<b>App ID rejected.</b> Your <code>pat_</code> token proves your application exists — open the <b>developers.deriv.com dashboard</b>, open your application card, <b>copy its App ID</b> and paste it in this page's App ID field. The placeholder <b>1089 is a legacy ID</b> and always fails here.";
       } else if (/Deriv-App-ID header is required/i.test(e.message)){
-        hint = "<b>Fill the App ID field</b> (registered PAT-app ID from developers.deriv.com) so the REST fallback can run.";
+        hint = "<b>Fill the App ID field</b> — pat_ tokens require your application's App ID (developers.deriv.com dashboard → your app → App ID).";
       } else if (/Invalid token format/i.test(e.message)){
         hint = "<b>Token looks malformed.</b> Regenerate it: app.deriv.com → Settings → API tokens (Read + Trade).";
       } else if (/HTTP 401/i.test(e.message)){

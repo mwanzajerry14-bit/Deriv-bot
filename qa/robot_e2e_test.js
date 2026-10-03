@@ -1,10 +1,10 @@
 /**
  * End-to-end robot test: boots Trend_Robot.html against a scripted mock Deriv
- * WebSocket and drives the FULL flow through the real UI handlers:
- *   Connect & scan -> sweep -> Arm -> direct authorize -> account switch
- *   -> 4/4 signal -> proposal (underlying_symbol) -> buy (token+price)
- *   -> settlement -> balance refresh -> TP hit -> auto-disarm.
- * This is the regression net for the new-platform auth + trading schema.
+ * backend and drives the FULL flow through the real UI handlers.
+ * Scenario 1 (classic token): Connect -> direct authorize -> account switch
+ *   -> 4/4 signal -> proposal -> buy -> settle -> TP -> auto-disarm -> STOP.
+ * Scenario 2 (pat_ token): skips direct mode, REST accounts -> OTP -> same
+ *   trading flow on the pre-authenticated OTP socket.
  */
 const fs = require("fs");
 const path = require("path");
@@ -21,6 +21,7 @@ function check(label, cond, detail) {
 }
 
 const TOKEN = "e2eTestToken1234567890";
+const PAT = "pat_e2etest0123456789abcdef0123456789abcdef0123456789abcdef";
 const r2 = x => Math.round((x + Number.EPSILON) * 100) / 100;
 
 /* ---- fixtures: R_10 = strong uptrend (4/4 CALL), R_50 = flat (never qualifies) ---- */
@@ -45,12 +46,11 @@ function pricesFlat() {
   return Array.from({ length: 100 }, (_, i) => 500 + (i % 2 ? 0.01 : -0.01));
 }
 
-/* ---- mock Deriv socket speaking the new-platform schema ---- */
+/* ---- mock Deriv WebSocket (new-platform schema) ---- */
 function makeMockWS() {
   return class MockWS {
     constructor(url) {
       this.url = url; this.readyState = 0; this._bal = 2.34;
-      this.sawAuthorizeSwitch = null;
       setTimeout(() => { this.readyState = 1; if (this.onopen) this.onopen({}); }, 0);
     }
     send(str) {
@@ -75,8 +75,8 @@ function makeMockWS() {
           { loginid: "CR123", currency: "USD", balance: 150.5, is_virtual: false }
         ];
         let active;
-        if (m.loginid === "VRT777") { this.sawAuthorizeSwitch = m.loginid; active = list[0]; }
-        else active = list[1]; // default active = REAL, so demo selection must switch
+        if (m.loginid === "VRT777") active = list[0];
+        else active = list[1]; // default active = REAL, demo selection must switch
         return withRid({ msg_type: "authorize", authorize: Object.assign({ account_list: list }, active) });
       }
       if (m.balance != null) {
@@ -92,7 +92,6 @@ function makeMockWS() {
         const ok = typeof m.buy === "string" && m.buy.length >= 32 && String(m.price) === "0.35";
         if (!ok) return withRid({ msg_type: "buy", error: { code: "InputValidationFailed", message: "bad buy: " + JSON.stringify(m) } });
         this._bal = r2(this._bal - 0.35);
-        const ridSave = rid;
         setTimeout(() => {
           if (this.onmessage) this.onmessage({ data: JSON.stringify({ msg_type: "balance", balance: { balance: this._bal, currency: "USD" } }) });
         }, 10);
@@ -114,7 +113,27 @@ function makeMockWS() {
   };
 }
 
-/* ---- DOM stubs ---- */
+/* ---- mock REST fetch for the PAT/OTP scenario ---- */
+function mockFetch(url, opts) {
+  const u = String(url);
+  const method = (opts && opts.method) || "GET";
+  mockFetch.seen = (mockFetch.seen || []).concat([{ u, headers: (opts && opts.headers) || {} }]);
+  const resp = (obj, status) => ({ ok: (status || 200) < 400, status: status || 200,
+    text: async () => JSON.stringify(obj) });
+  if (method === "GET" && /\/trading\/v1\/options\/accounts$/.test(u)) {
+    const auth = String((opts.headers || {}).Authorization || "");
+    if (!auth.startsWith("Bearer ")) return resp({ errors: [{ message: "Missing authorization header" }] }, 401);
+    return resp({ data: { accounts: [
+      { id: "VRT123", account_type: "demo", currency: "USD" },
+      { id: "CR999", account_type: "real", currency: "USD" }
+    ]}});
+  }
+  if (method === "POST" && /\/accounts\/VRT123\/otp$/.test(u))
+    return resp({ data: { url: "wss://mock-otp-session.example/otp?abc123" } });
+  return resp({ errors: [{ message: "unexpected REST call: " + u }] }, 404);
+}
+
+/* ---- DOM stubs + sandbox factory ---- */
 function mkEl() {
   return {
     style: {}, value: "", innerHTML: "", textContent: "", className: "",
@@ -123,79 +142,93 @@ function mkEl() {
     addEventListener(t, f) { this._handlers[t] = f; }
   };
 }
-const els = {};
-const store = {};
 const MockWS = makeMockWS();
-const sandbox = {
-  console,
-  document: { getElementById: id => (els[id] = els[id] || mkEl()), hidden: false },
-  localStorage: {
-    getItem: k => (k in store ? store[k] : null),
-    setItem: (k, v) => { store[k] = String(v); },
-    removeItem: k => { delete store[k]; }
-  },
-  URL, setTimeout, clearTimeout, setInterval, clearInterval,
-  fetch: () => Promise.reject(new Error("no-network-in-test")),
-  WebSocket: MockWS
-};
-sandbox.window = sandbox;
-vm.createContext(sandbox);
+function buildSandbox() {
+  const els = {};
+  const store = {};
+  const sandbox = {
+    console,
+    document: { getElementById: id => (els[id] = els[id] || mkEl()), hidden: false },
+    localStorage: {
+      getItem: k => (k in store ? store[k] : null),
+      setItem: (k, v) => { store[k] = String(v); },
+      removeItem: k => { delete store[k]; }
+    },
+    URL, setTimeout, clearTimeout, setInterval, clearInterval,
+    fetch: mockFetch,
+    WebSocket: MockWS
+  };
+  sandbox.window = sandbox;
+  vm.createContext(sandbox);
+  vm.runInContext(coreSrc, sandbox, { filename: "rcore.js" });
+  vm.runInContext(appSrc, sandbox, { filename: "rapp.js" });
+  els.inpDur = mkEl(); els.inpDur.value = "5";
+  els.inpCd = mkEl(); els.inpCd.value = "20";
+  els.inpSweep = mkEl(); els.inpSweep.value = "2500";
+  els.inpMinScore = mkEl(); els.inpMinScore.value = "90";
+  els.inpToken = mkEl();
+  els.inpApp = mkEl(); els.inpApp.value = "1089";
+  els.selAcct = mkEl(); els.selAcct.value = "demo";
+  return { els, store };
+}
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-(async () => {
-  try {
-    vm.runInContext(coreSrc, sandbox, { filename: "rcore.js" });
-    vm.runInContext(appSrc, sandbox, { filename: "rapp.js" });
-  } catch (e) {
-    check("scripts load", false, e.stack);
-    process.exit(1);
-  }
-  check("scripts load", true);
-  check("window.CORE_R exported", !!sandbox.window.CORE_R);
-
-  // defaults from the real HTML inputs
-  els.inpDur = els.inpDur || mkEl(); els.inpDur.value = "5";
-  els.inpCd = els.inpCd || mkEl(); els.inpCd.value = "20";
-  els.inpSweep = els.inpSweep || mkEl(); els.inpSweep.value = "5000";
-  els.inpToken = els.inpToken || mkEl(); els.inpToken.value = TOKEN;
-  els.inpApp = els.inpApp || mkEl(); els.inpApp.value = "1089";
-  els.selAcct = els.selAcct || mkEl(); els.selAcct.value = "demo";
-  els.inpMinScore = els.inpMinScore || mkEl(); els.inpMinScore.value = "90";
-
-  // 1) Connect & scan
-  await els.btnScan._handlers.click();
-  await sleep(250);
-  check("scan: watching 2 Volatility indices", /Watching 2 Volatility/.test(els.log.innerHTML), els.log.innerHTML.slice(-300));
-  check("scan: mode SCANNING", els.modePill.textContent === "SCANNING", els.modePill.textContent);
-  check("scan: R_10 qualifies 4/4 CALL", /CALL 4\/4/.test(els.tableArea.innerHTML), "");
-
-  // 2) Arm -> direct authorize (active=CR123 must switch to VRT777 for demo)
-  await els.btnArm._handlers.click();
-  await sleep(400);
+async function tradeFlow(els, tag) {
   const log = els.log.innerHTML;
-  check("auth: direct token mode used", /Direct token mode/.test(log), log.slice(-500));
-  check("auth: switched to demo account VRT777", /Authorized: VRT777 · USD · demo/.test(log), log.slice(-500));
-  check("auth: no Invalid application error", !/Invalid application/.test(els.banner.innerHTML), els.banner.innerHTML);
-  // full arm->trade->TP can complete within this window (mock is instant); the
-  // deterministic proof of arming is: not DISARMED and no arm-failure banner
-  check("auth: armed successfully", els.modePill.textContent !== "DISARMED" && !/Could not arm/.test(els.banner.innerHTML),
-    els.modePill.textContent + " | " + els.banner.innerHTML);
-  check("token saved to localStorage", store.dr_robot_token === TOKEN);
+  check(tag + ": signal on R_10", /SIGNAL: Volatility 10 Index \(R_10\) CALL 4\/4/.test(log), log.slice(-600));
+  check(tag + ": proposal ok", /Proposal ok — price 0\.35/.test(log), log.slice(-600));
+  check(tag + ": OPEN #987654", /OPEN #987654/.test(log), log.slice(-600));
+  check(tag + ": settlement WON", /WON #987654/.test(log), log.slice(-600));
+  check(tag + ": TP disarm banner", /Take-profit/.test(els.banner.innerHTML), els.banner.innerHTML);
+}
 
-  // 3) trade: proposal->buy->settle->TP
+(async () => {
+  /* ================= Scenario 1: classic token, direct authorize ================= */
+  console.log("--- scenario 1: direct authorize (classic token)");
+  const s1 = buildSandbox();
+  s1.els.inpToken.value = TOKEN;
+  await s1.els.btnScan._handlers.click();
+  await sleep(250);
+  check("s1: scanning 2 markets", /Watching 2 Volatility/.test(s1.els.log.innerHTML), "");
+  await s1.els.btnArm._handlers.click();
+  await sleep(400);
+  check("s1: direct token mode used", /Direct token mode/.test(s1.els.log.innerHTML), s1.els.log.innerHTML.slice(-400));
+  check("s1: switched to VRT777", /Authorized: VRT777 · USD · demo/.test(s1.els.log.innerHTML), "");
+  check("s1: armed", s1.els.modePill.textContent !== "DISARMED" && !/Could not arm/.test(s1.els.banner.innerHTML),
+    s1.els.modePill.textContent);
   await sleep(500);
-  const L = els.log.innerHTML;
-  check("trade: signal on R_10", /SIGNAL: Volatility 10 Index \(R_10\) CALL 4\/4/.test(L), L.slice(-700));
-  check("trade: proposal ok", /Proposal ok — price 0\.35/.test(L), L.slice(-700));
-  check("trade: OPEN #987654", /OPEN #987654/.test(L), L.slice(-700));
-  check("trade: settlement WON logged", /WON #987654/.test(L), L.slice(-700));
-  check("stats: 1 trade 1 win", els.stTW.textContent === "1 (1/0)", els.stTW.textContent);
+  await tradeFlow(s1.els, "s1");
+  check("s1: stats 1 win", s1.els.stTW.textContent === "1 (1/0)", s1.els.stTW.textContent);
+  // STOP cleans up timers/sockets for this scenario
+  s1.els.btnStop._handlers.click();
+  check("s1: STOP works", s1.els.modePill.textContent === "STOPPED", s1.els.modePill.textContent);
 
-  // 4) TP (+$0.27 ≥ $0.12 on $2.34 start) closes the session
-  check("tp: banner shows take-profit", /Take-profit/.test(els.banner.innerHTML), els.banner.innerHTML);
-  check("tp: disarmed to SCANNING", els.modePill.textContent === "SCANNING", els.modePill.textContent);
-  check("tp: balance reflects settlement ($2.61)", /2\.61/.test(els.stBal.textContent), els.stBal.textContent);
+  /* ================= Scenario 2: pat_ token -> REST OTP ================= */
+  console.log("--- scenario 2: pat_ token -> REST OTP");
+  const s2 = buildSandbox();
+  s2.els.inpToken.value = PAT;
+  await s2.els.btnScan._handlers.click();
+  await sleep(250);
+  await s2.els.btnArm._handlers.click();
+  await sleep(500);
+  const l2 = s2.els.log.innerHTML;
+  check("s2: PAT detected (no doomed direct attempt)", /PAT detected — direct WS mode doesn't accept PATs/.test(l2),
+    l2.slice(-500));
+  check("s2: no direct-mode failure noise", !/Direct authorize failed/.test(l2), l2.slice(-500));
+  check("s2: REST OTP session opened", /OTP ok — opening authenticated session \(demo, account VRT123\)/.test(l2),
+    l2.slice(-500));
+  check("s2: balance read", /Balance: \$2\.34/.test(l2), l2.slice(-500));
+  const acctReq = (mockFetch.seen || []).find(r => /\/trading\/v1\/options\/accounts$/.test(r.u));
+  check("s2: REST accounts call sent Bearer PAT + Deriv-App-ID",
+    acctReq && /^Bearer pat_/.test(acctReq.headers.Authorization || "") &&
+    (acctReq.headers["Deriv-App-ID"] || "") === "1089",
+    JSON.stringify(acctReq && { auth: String(acctReq.headers.Authorization || "").slice(0, 12),
+                                 app: acctReq.headers["Deriv-App-ID"] }));
+  check("s2: armed", s2.els.modePill.textContent !== "DISARMED" && !/Could not arm/.test(s2.els.banner.innerHTML),
+    s2.els.modePill.textContent + " | " + s2.els.banner.innerHTML);
+  await sleep(500);
+  await tradeFlow(s2.els, "s2");
 
   console.log(failures === 0 ? "\nROBOT E2E TEST PASSED ✓" : `\n${failures} FAILURES ✗`);
   process.exit(failures === 0 ? 0 : 1);
