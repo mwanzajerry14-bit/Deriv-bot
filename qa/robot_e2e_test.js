@@ -87,8 +87,14 @@ function makeMockWS() {
         { symbol: "R_10", display_name: "Volatility 10 Index", market: "synthetic_index", pip_size: 3 },
         { symbol: "R_50", display_name: "Volatility 50 Index", market: "synthetic_index", pip_size: 4 }
       ]});
-      if (m.ticks_history != null && m.style === "candles" && m.granularity === 60)
+      if (m.ticks_history != null && m.style === "candles" && m.granularity === 60){
+        MockWS.counts = MockWS.counts || {};
+        MockWS.counts[m.ticks_history] = (MockWS.counts[m.ticks_history] || 0) + 1;
+        // injected failure: R_50 history always times out → exercises deferred-log + backoff path
+        if (m.ticks_history === "R_50")
+          return withRid({ error: { code: "RateLimit", message: "timeout: simulated history failure" } });
         return withRid({ candles: pageCandles(m.ticks_history, m.end) });
+      }
       if (m.ticks_history != null && m.style === "candles")
         return withRid({ candles: pageCandles(m.ticks_history, m.end).slice(0, 80) });
       if (m.ticks_history != null && m.style === "ticks")
@@ -178,6 +184,7 @@ function mkEl() {
 const MockWS = makeMockWS();
 const htmlIds = new Set([...html.matchAll(/id="([A-Za-z0-9_]+)"/g)].map(m => m[1]));
 function buildSandbox() {
+  MockWS.counts = {};   // per-scenario request counters
   const els = {};
   const store = {};
   const sandbox = {
@@ -233,6 +240,20 @@ async function tradeFlow(els, tag) {
   await s1.els.btnScan._handlers.click();
   await sleep(400);
   check("s1: scan started", /Public scan running/.test(s1.els.log.innerHTML), s1.els.log.innerHTML.slice(-400));
+  // history-failure injection (R_50): aggregated deferred log + backoff, no per-sweep hammering
+  check("s1: injected failure aggregated into one deferred log line",
+    /History deferred: 1\/2 symbol\(s\) failed — backoff active \(R_50\)/.test(s1.els.log.innerHTML),
+    s1.els.log.innerHTML.slice(-500));
+  check("s1: no reconnect on partial failure", !/reconnecting/i.test(s1.els.log.innerHTML), "");
+  const c1 = (MockWS.counts || {}).R_50 || 0;
+  check("s1: failed symbol fetched exactly once (backoff, not every sweep)", c1 === 1, String(c1));
+  await s1.els.btnScan._handlers.click();          // rescan must NOT re-request a backed-off symbol
+  await sleep(300);
+  const c2 = (MockWS.counts || {}).R_50 || 0;
+  check("s1: backoff survives rescan (R_50 still 1 fetch)", c2 === 1, String(c2));
+  check("s1: no new deferred line after rescan (backed-off symbol not retried)",
+    (s1.els.log.innerHTML.match(/History deferred/g) || []).length === 0,
+    String((s1.els.log.innerHTML.match(/History deferred/g) || []).length));
   await s1.els.btnArm._handlers.click();
   await sleep(600);
   check("s1: direct token mode used", /Direct token mode/.test(s1.els.log.innerHTML), s1.els.log.innerHTML.slice(-400));

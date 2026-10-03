@@ -751,7 +751,7 @@ if (typeof module !== "undefined" && module.exports){
     reqId: 1, pending: new Map(),
     sweepTimer: null, ping: null, aping: null,
     risk: null, symbols: [], rows: [],
-    hist: new Map(), nextHist: new Map(),
+    hist: new Map(), nextHist: new Map(), histFail: new Map(), reconnAt: 0,
     inTrade: false, current: null, cooldownUntil: 0,
     trades: 0, wins: 0, started: false,
     calib: { threshold: 11, wrEstimate: 0.55, evMin: 0.02, source: "default" },
@@ -832,6 +832,7 @@ if (typeof module !== "undefined" && module.exports){
         const fail = () => { if (settled) return; settled = true; try { ws.close(); } catch(e){} attempt(i + 1); };
         const timer = setTimeout(fail, 8000);
         ws.onopen = () => { if (settled) return; settled = true; clearTimeout(timer);
+          if (state.pub && state.pub !== ws){ try { state.pub.close(); } catch(e){} }
           state.pub = ws;
           ws.onmessage = ev => routeMsg(ws, ev, null);
           clearInterval(state.ping);
@@ -878,25 +879,29 @@ if (typeof module !== "undefined" && module.exports){
   async function loadHistory(sym, pages){
     const byEpoch = new Map((state.hist.get(sym) || []).map(c => [c.epoch, c]));
     let end = null;
-    for (let p = 0; p < pages; p++){
-      const q = { ticks_history: sym, style: "candles", granularity: 60, count: 1000,
-                  end: end == null ? "latest" : end };
-      const r = await wsSend(state.pub, q);
-      const arr = r.candles || [];
-      if (!arr.length) break;
-      for (const c of arr){
-        const e = Number(c.epoch);
-        if (!isFinite(e)) continue;
-        byEpoch.set(e, { epoch: e, open: Number(c.open), high: Number(c.high),
-                         low: Number(c.low), close: Number(c.close) });
+    try {
+      for (let p = 0; p < pages; p++){
+        const q = { ticks_history: sym, style: "candles", granularity: 60, count: 1000,
+                    end: end == null ? "latest" : end };
+        const r = await wsSend(state.pub, q);
+        const arr = r.candles || [];
+        if (!arr.length) break;
+        for (const c of arr){
+          const e = Number(c.epoch);
+          if (!isFinite(e)) continue;
+          byEpoch.set(e, { epoch: e, open: Number(c.open), high: Number(c.high),
+                           low: Number(c.low), close: Number(c.close) });
+        }
+        const oldest = Math.min.apply(null, arr.map(c => Number(c.epoch)));
+        end = oldest - 60;
+        if (arr.length < 1000) break;
       }
-      const oldest = Math.min.apply(null, arr.map(c => Number(c.epoch)));
-      end = oldest - 60;
-      if (arr.length < 1000) break;
+    } finally {
+      // keep whatever pages DID arrive — a mid-fetch timeout must not discard progress
+      const merged = Array.from(byEpoch.values()).sort((a, b) => a.epoch - b.epoch);
+      state.hist.set(sym, merged);
     }
-    const merged = Array.from(byEpoch.values()).sort((a, b) => a.epoch - b.epoch);
-    state.hist.set(sym, merged);
-    return merged.length;
+    return (state.hist.get(sym) || []).length;
   }
   function mtfFrom(c1){
     return {
@@ -954,10 +959,43 @@ if (typeof module !== "undefined" && module.exports){
       const now = Date.now();
       const stale = state.symbols.filter(s => !state.hist.has(s.symbol) || (state.nextHist.get(s.symbol) || 0) < now);
       if (stale.length){
-        await Promise.all(stale.map(async s => {
-          try { await loadHistory(s.symbol, 4); state.nextHist.set(s.symbol, Date.now() + 90000); }
-          catch (e){ log("History " + s.symbol + ": " + e.message, "w"); }
-        }));
+        const fails = [];
+        let sockDead = false, allTimeout = 0;
+        // max 2 symbols in flight — a 13×4 parallel burst starves the socket (every request timed out live)
+        for (let i = 0; i < stale.length; i += 2){
+          await Promise.all(stale.slice(i, i + 2).map(async s => {
+            try {
+              const have = state.hist.get(s.symbol) || [];
+              const newest = have.length ? have[have.length - 1].epoch : 0;
+              // full 4-page load only when cold or gap >30m; routine refresh = 1 top-up page
+              const cold = !have.length || (Date.now() / 1000 - newest) > 1800;
+              await loadHistory(s.symbol, cold ? 4 : 1);
+              state.nextHist.set(s.symbol, Date.now() + 90000);
+              state.histFail.delete(s.symbol);
+            } catch (e){
+              const n = (state.histFail.get(s.symbol) || 0) + 1;
+              state.histFail.set(s.symbol, n);
+              // escalating backoff: a failing symbol must NOT retry every 2.5s sweep
+              state.nextHist.set(s.symbol, Date.now() + Math.min(120000, 15000 * n));
+              fails.push(s.symbol);
+              if (/socket not open/i.test(e.message)) sockDead = true;
+              else if (/timeout/i.test(e.message)) allTimeout++;
+            }
+          }));
+        }
+        if (fails.length){
+          log("History deferred: " + fails.length + "/" + stale.length +
+              " symbol(s) failed — backoff active (" + fails.slice(0, 4).join(", ") +
+              (fails.length > 4 ? ", …" : "") + ")", "w");
+        }
+        // self-heal: if EVERY request timed out or the socket is closed, reconnect once (throttled 60s)
+        if ((sockDead || (allTimeout === stale.length && stale.length >= 2)) &&
+            Date.now() - state.reconnAt > 60000){
+          state.reconnAt = Date.now();
+          state.histFail.clear();
+          stale.forEach(s => state.nextHist.delete(s.symbol));  // fresh socket → retry promptly
+          tryReconnect();
+        }
       }
       const rows = [];
       const nowSec = Math.floor(Date.now() / 1000);
@@ -989,7 +1027,7 @@ if (typeof module !== "undefined" && module.exports){
     }
   }
   async function tryReconnect(){
-    log("Public socket lost — reconnecting…", "w");
+    log("Public socket lost/unresponsive — reconnecting…", "w");
     try { await pubConnect(); await loadSymbols(); }
     catch(e){ log("Reconnect failed: " + e.message, "e"); }
   }
