@@ -71,7 +71,7 @@
 <body>
 <div class="wrap">
   <h1>Deriv Trend Robot <span class="dot">●</span></h1>
-  <div class="sub">Scans every Volatility index with your Rise/Fall bot's <b>exact 4-check trend scanner</b> and — when armed — purchases <b>the first market that qualifies (4/4 trend + score ≥ 85, no entry below)</b>, using the bots' money rules (2% → 4% → 8% cap, TP +5% / SL −10%, floors for $2 accounts). One trade at a time. <b>Demo first.</b></div>
+  <div class="sub">Scans every Volatility index with your Rise/Fall bot's <b>exact 4-check trend scanner</b> and — when armed — purchases <b>the first market that qualifies (4/4 trend + score ≥ 90, no entry below)</b>, using the bots' money rules (2% → 4% → 8% cap, TP +5% / SL −5%, floors for $2 accounts). One trade at a time. <b>Demo first.</b></div>
 
   <div class="warnbar">⚠️ <b>This robot trades real contracts when armed.</b> Keep it on <b>Demo</b> until you've watched a full session. Your API token stays in <b>this browser only</b> (localStorage) — revoke it anytime at Deriv → Settings → API tokens.</div>
 
@@ -116,8 +116,8 @@
     <div class="grid">
       <div><label class="f">Duration (ticks)</label><input type="number" id="inpDur" value="5" min="1" max="10"></div>
       <div><label class="f">Cooldown after each trade (seconds ≈ 10 ticks)</label><input type="number" id="inpCd" value="20" min="0"></div>
-      <div><label class="f">Sweep every (ms)</label><input type="number" id="inpSweep" value="5000" min="2500" step="500"></div>
-      <div><label class="f">Min entry score (auto-trade)</label><input type="number" id="inpMinScore" value="85" min="0" max="100">
+      <div><label class="f">Sweep every (ms)</label><input type="number" id="inpSweep" value="2500" min="1500" step="500"></div>
+      <div><label class="f">Min entry score (auto-trade)</label><input type="number" id="inpMinScore" value="90" min="0" max="100">
         <div class="hint">No entry below this score — 4/4 alone is not enough.</div></div>
       <div><label class="f">Signal gate</label><input type="text" value="4/4 trend scanner (fixed)" disabled></div>
     </div>
@@ -154,9 +154,9 @@ const CONFIG = {
   strengthRatio: 0.3, streamWindow: 10, streamSamples: 90,
   weights: { trend: 0.25, strong: 0.20, eff: 0.20, tickmom: 0.15, range: 0.20 },
   maxSymbols: 24, chunkSize: 6, requestTimeoutMs: 15000,
-  entryScore: 85,
+  entryScore: 90,
   minStake: 0.35, basePct: 0.02, capPct: 0.08,
-  tpPct: 0.05, slPct: 0.10, smallFloor: 0.70
+  tpPct: 0.05, slPct: 0.05, smallFloor: 0.70
 };
 
 function round2(x){ return Math.round((Number(x) + Number.EPSILON) * 100) / 100; }
@@ -322,7 +322,7 @@ function slHit(m, liveBal){ return round2(m.startBal - liveBal) >= m.sl; }
 function sessionPl(m, liveBal){ return round2(liveBal - m.startBal); }
 
 /* pick the trade: ONLY 4/4 qualifiers AT OR ABOVE the entry-score threshold;
-   best score wins (ties -> first in rank order). Default threshold = CONFIG.entryScore (85). */
+   best score wins (ties -> first in rank order). Default threshold = CONFIG.entryScore (90). */
 function pickSignal(rows, minScore){
   const min = (minScore == null || minScore === "" || !isFinite(Number(minScore))) ? CONFIG.entryScore : Number(minScore);
   const quals = (rows || []).filter(r => r && r.ready && r.ready.passed === 4 && r.ready.side &&
@@ -390,6 +390,11 @@ if (typeof module !== "undefined" && module.exports){
   function stats(){
     const m = state.money;
     $("stBal").textContent = state.lastBal != null ? "$" + state.lastBal.toFixed(2) : "—";
+    try {
+      let pk = Number(localStorage.getItem("dr_robot_peak") || 0);
+      if (state.lastBal != null && state.lastBal > pk){ pk = state.lastBal; localStorage.setItem("dr_robot_peak", String(pk)); }
+      $("stPeak").textContent = pk > 0 ? "$" + pk.toFixed(2) : "—";
+    } catch(e){ $("stPeak").textContent = "—"; }
     if (m && state.lastBal != null){
       const pl = window.CORE_R.sessionPl(m, state.lastBal);
       const el = $("stPl");
@@ -506,17 +511,13 @@ if (typeof module !== "undefined" && module.exports){
     state.sweeping = true;
     try {
       if (!state.pub || state.pub.readyState !== 1) throw new Error("socket not open");
-      const total = state.symbols.length, rows = [];
-      for (let i = 0; i < total; i += window.CORE_R.CONFIG.chunkSize){
-        const chunk = state.symbols.slice(i, i + window.CORE_R.CONFIG.chunkSize);
-        const res = await Promise.all(chunk.map(async s => {
-          try { const { candles, prices } = await fetchSym(s);
-            return window.CORE_R.analyzeSymbol({ symbol: s.symbol, displayName: s.displayName, pip: s.pip },
-              candles, prices, Math.floor(Date.now() / 1000)); }
-          catch (e){ return null; }
-        }));
-        res.forEach(r => { if (r) rows.push(r); });
-      }
+      const got = await Promise.all(state.symbols.map(async s => {
+        try { const { candles, prices } = await fetchSym(s);
+          return window.CORE_R.analyzeSymbol({ symbol: s.symbol, displayName: s.displayName, pip: s.pip },
+            candles, prices, Math.floor(Date.now() / 1000)); }
+        catch (e){ return null; }
+      }));
+      const rows = got.filter(r => r);
       state.rows = window.CORE_R.rankRows(rows);
       renderRows();
       setStatus("Scanning… " + state.rows.length + " markets · updated " + new Date().toLocaleTimeString(), "ok");
@@ -819,11 +820,20 @@ if (typeof module !== "undefined" && module.exports){
     if (state.lastBal == null || state.lastBal <= 0) { /* keep old */ }
     // TP / SL
     if (state.lastBal != null && window.CORE_R.tpHit(state.money, state.lastBal)){
+      state.sessionLossStreak = 0;
       log("🎯 Take-profit hit — session closed. Disarming.", "s");
       setMode("scanning"); banner("<b>🎯 Take-profit reached — auto-trade disarmed.</b> Press Arm to start a new session.");
     } else if (state.lastBal != null && window.CORE_R.slHit(state.money, state.lastBal)){
-      log("🛑 Stop-loss hit — session closed. Disarming.", "e");
-      setMode("scanning"); banner("<b>🛑 Stop-loss reached — auto-trade disarmed.</b> Press Arm to start a new session.");
+      state.sessionLossStreak = (state.sessionLossStreak || 0) + 1;
+      if (state.sessionLossStreak >= 2){
+        state.cooldownUntil = Date.now() + 60000;
+        log("🔴 Two losing sessions in a row —60s entry pause, disarmed.", "e");
+        setMode("scanning");
+        banner("<b>🔴 Two losing sessions in a row —60s pause.</b> The robot disarmed itself; entries stay blocked for 60s even if you re-arm. This is the bleed guard: step away, then continue.");
+      } else {
+        log("🛑 Stop-loss hit — session closed. Disarming. (loss streak:1)", "e");
+        setMode("scanning"); banner("<b>🛑 Stop-loss reached — auto-trade disarmed.</b> Press Arm to start a new session.");
+      }
     } else if (isBroke(state.lastBal || 0)){
       log("⛔ Balance below $0.35 — disarming.", "e"); setMode("scanning");
       banner("<b>⛔ Balance too low for the minimum stake — auto-trade disarmed.</b>");
@@ -852,7 +862,7 @@ if (typeof module !== "undefined" && module.exports){
       setStatus("Scanning (disarmed) — paste a token and press Arm to auto-trade.", "ok");
       clearInterval(state.sweepTimer);
       await sweep();
-      state.sweepTimer = setInterval(() => { if (!document.hidden) sweep(); }, Math.max(2500, Number($("inpSweep").value) || 5000));
+      state.sweepTimer = setInterval(() => { if (!document.hidden) sweep(); }, Math.max(1500, Number($("inpSweep").value) || 2500));
     } catch (e){
       log("Connect failed: " + e.message, "e");
       banner("<b>Could not start scanning.</b><br>" + esc(e.message) +
@@ -868,6 +878,14 @@ if (typeof module !== "undefined" && module.exports){
     try {
       $("btnArm").disabled = true;
       await authConnect();
+      try {
+        const pk = Number(localStorage.getItem("dr_robot_peak") || 0);
+        if (pk > 0 && state.lastBal != null && state.lastBal < pk * 0.9){
+          log("⚠️ Balance $" + state.lastBal.toFixed(2) + " is " +
+              ((pk - state.lastBal) / pk * 100).toFixed(1) + "% below your peak $" + pk.toFixed(2) +
+              " — sessions armed below peak tend to give back. Proceed consciously.", "w");
+        }
+      } catch(e){}
       if (window.CORE_R.tpHit(state.money, state.lastBal) || window.CORE_R.slHit(state.money, state.lastBal)){
         throw new Error("Session limits already met on current balance vs start — restart to recalibrate.");
       }

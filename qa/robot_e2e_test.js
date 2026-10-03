@@ -161,7 +161,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   els.inpToken = els.inpToken || mkEl(); els.inpToken.value = TOKEN;
   els.inpApp = els.inpApp || mkEl(); els.inpApp.value = "1089";
   els.selAcct = els.selAcct || mkEl(); els.selAcct.value = "demo";
-  els.inpMinScore = els.inpMinScore || mkEl(); els.inpMinScore.value = "85";
+  els.inpMinScore = els.inpMinScore || mkEl(); els.inpMinScore.value = "90";
 
   // 1) Connect & scan
   await els.btnScan._handlers.click();

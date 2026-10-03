@@ -129,9 +129,9 @@ the `0.05` in Initialization if you want longer runs (e.g. `0.15` ≈ three wins
 Your bot's blocks can only see the market they're loaded with — so the companion tool ranks
 **every Volatility index** for you, then you set the winner in Trade parameters (two clicks).
 
-The **Trend Robot** uses the same gate plus a **minimum entry score of 85** (editable in
-*Strategy settings*): a market that is 4/4 but scores below 85 is shown in the table as
-*4/4 but score X < 85* and **no buy happens**.
+The **Trend Robot** uses the same gate plus a **minimum entry score of 90** (editable in
+*Strategy settings*): a market that is 4/4 but scores below 90 is shown in the table as
+*4/4 but score X < 90* and **no buy happens**.
 
 **Run it:** open **`https://mwanzajerry14-bit.github.io/Deriv-bot/`** and press *Scan markets* —
 or double-click the downloaded `Best_Market_Analyzer.html` in Chrome. It connects from *your*
@@ -165,7 +165,10 @@ exactly what to set in **Trade parameters → Market**. Auto-refreshes every 60s
 The analyzer *tells* you when a market is BOT-READY 4/4 — the robot **acts on it**. It runs
 your bots' exact same engine in the browser: public WSS sweep over **every Volatility index**
 (default every 5 s), the identical 4-check trend gate, and the identical money rules
-(2%→4%→8% cap with the $0.35/$0.70 floors, TP +5%, SL −10%, cooldown, one trade at a time).
+(2%→4%→8% cap with the $0.35/$0.70 floors, TP +5%, **SL −5%**, cooldown, one trade at a time;
+the XML bots on bot.deriv.com keep their original SL −10%). Sweep runs in parallel every 2.5 s,
+entries require 4/4 **and** score ≥ 90, two losing sessions in a row trigger a 60s bleed-guard
+pause, and a persistent *Balance peak* stat warns when you arm ≥10% below peak.
 
 **How to run it (demo first):**
 

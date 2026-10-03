@@ -21,7 +21,7 @@ const r2 = x => Math.round((x + Number.EPSILON) * 100) / 100;
   check("$2: base 0.35 (min-stake floor)", m.base === 0.35, m.base);
   check("$2: cap 0.70 (small-floor beats 8%)", m.cap === 0.70, m.cap);
   check("$2: tp 0.10", m.tp === 0.1, m.tp);
-  check("$2: sl 0.70 (floor beats 10%)", m.sl === 0.7, m.sl);
+  check("$2: sl 0.70 (floor beats 5%)", m.sl === 0.7, m.sl);
   check("$2: first stake 0.35", m.stake === 0.35, m.stake);
 
   C.moneyOnLose(m);
@@ -36,8 +36,8 @@ const r2 = x => Math.round((x + Number.EPSILON) * 100) / 100;
 // ---------- money math: $1,000 account (unchanged classic behavior) ----------
 {
   const m = C.moneyInit(1000);
-  check("$1000: base 20, cap 80, tp 50, sl 100",
-    m.base === 20 && m.cap === 80 && m.tp === 50 && m.sl === 100, JSON.stringify(m));
+  check("$1000: base 20, cap 80, tp 50, sl 50 (SL now5%)",
+    m.base === 20 && m.cap === 80 && m.tp === 50 && m.sl === 50, JSON.stringify(m));
   C.moneyOnLose(m); C.moneyOnLose(m);
   check("$1000: 20 -> 40 -> 80", m.stake === 80, m.stake);
   C.moneyOnLose(m);
@@ -67,24 +67,24 @@ const r2 = x => Math.round((x + Number.EPSILON) * 100) / 100;
   check("sessionPl rounds to cents", C.sessionPl(s, 2.007) === 0.01, C.sessionPl(s, 2.007));
 }
 
-// ---------- pickSignal: 4/4 AND score >= entry threshold (default 85) ----------
+// ---------- pickSignal: 4/4 AND score >= entry threshold (default 90) ----------
 {
   const mk = (sym, passed, side, score) => ({
     symbol: sym, displayName: sym, score,
     ready: { side: passed ? side : (side || null), passed, checks: [] }
   });
-  check("entry threshold default = 85", C.CONFIG.entryScore === 85, C.CONFIG.entryScore);
+  check("entry threshold default = 90", C.CONFIG.entryScore === 90, C.CONFIG.entryScore);
   check("no rows -> null", C.pickSignal([]) === null);
   check("no 4/4 -> null", C.pickSignal([mk("A", 3, "CALL", 90), mk("B", 2, "PUT", 80)]) === null);
 
-  check("4/4 score 84.9 -> REJECTED (below 85)",
-    C.pickSignal([mk("A", 4, "CALL", 84.9)]) === null, JSON.stringify(C.pickSignal([mk("A", 4, "CALL", 84.9)])));
-  check("4/4 score 85 -> taken (boundary)",
-    (() => { const s = C.pickSignal([mk("A", 4, "CALL", 85)]); return s && s.symbol === "A"; })(),
-    JSON.stringify(C.pickSignal([mk("A", 4, "CALL", 85)])));
-  check("empty input falls back to 85, not 0",
-    C.pickSignal([mk("A", 4, "CALL", 84.9)], "") === null &&
-    C.pickSignal([mk("A", 4, "CALL", 84.9)], null) === null);
+  check("4/4 score 89.9 -> REJECTED (below 90)",
+    C.pickSignal([mk("A", 4, "CALL", 89.9)]) === null, JSON.stringify(C.pickSignal([mk("A", 4, "CALL", 89.9)])));
+  check("4/4 score 90 -> taken (boundary)",
+    (() => { const s = C.pickSignal([mk("A", 4, "CALL", 90)]); return s && s.symbol === "A"; })(),
+    JSON.stringify(C.pickSignal([mk("A", 4, "CALL", 90)])));
+  check("empty input falls back to 90, not 0",
+    C.pickSignal([mk("A", 4, "CALL", 89.9)], "") === null &&
+    C.pickSignal([mk("A", 4, "CALL", 89.9)], null) === null);
 
   const rows = [mk("A", 3, "CALL", 99), mk("B", 4, "PUT", 91), mk("C", 4, "CALL", 88)];
   const sig = C.pickSignal(rows);
@@ -110,9 +110,9 @@ const r2 = x => Math.round((x + Number.EPSILON) * 100) / 100;
                     ready: { side: null, passed: 4, checks: [] } }];
   check("4/4 without side ignored", C.pickSignal(noSide) === null, JSON.stringify(C.pickSignal(noSide)));
 
-  check("entryThreshold: ''->85, '70'->70, null->85, junk->85",
-    C.entryThreshold("") === 85 && C.entryThreshold("70") === 70 &&
-    C.entryThreshold(null) === 85 && C.entryThreshold("abc") === 85,
+  check("entryThreshold: ''->90, '70'->70, null->90, junk->90",
+    C.entryThreshold("") === 90 && C.entryThreshold("70") === 70 &&
+    C.entryThreshold(null) === 90 && C.entryThreshold("abc") === 90,
     [C.entryThreshold(""), C.entryThreshold("70"), C.entryThreshold(null), C.entryThreshold("abc")].join(","));
 }
 
