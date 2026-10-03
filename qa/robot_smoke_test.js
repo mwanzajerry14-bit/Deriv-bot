@@ -29,9 +29,13 @@ function mkEl() {
 
 const els = {};
 const store = {};
+const htmlIds = new Set([...html.matchAll(/id="([A-Za-z0-9_]+)"/g)].map(m => m[1]));
 const sandbox = {
   console,
-  document: { getElementById: id => (els[id] = els[id] || mkEl()), hidden: false },
+  document: {
+    getElementById: id => (htmlIds.has(id) ? (els[id] = els[id] || mkEl()) : null),
+    hidden: false
+  },
   localStorage: {
     getItem: k => (k in store ? store[k] : null),
     setItem: (k, v) => { store[k] = String(v); },

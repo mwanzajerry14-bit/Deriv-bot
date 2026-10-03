@@ -143,12 +143,21 @@ function mkEl() {
   };
 }
 const MockWS = makeMockWS();
+/* browser-accurate: only ids that exist in the page's HTML resolve — a JS
+   reference to a missing element returns null (throws like the real DOM). */
+const htmlIds = new Set([...html.matchAll(/id="([A-Za-z0-9_]+)"/g)].map(m => m[1]));
 function buildSandbox() {
   const els = {};
   const store = {};
   const sandbox = {
     console,
-    document: { getElementById: id => (els[id] = els[id] || mkEl()), hidden: false },
+    document: {
+      getElementById: id => {
+        if (!htmlIds.has(id)) return null;
+        return (els[id] = els[id] || mkEl());
+      },
+      hidden: false
+    },
     localStorage: {
       getItem: k => (k in store ? store[k] : null),
       setItem: (k, v) => { store[k] = String(v); },
