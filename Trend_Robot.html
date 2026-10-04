@@ -1520,7 +1520,11 @@ if (typeof module !== "undefined" && module.exports){
     if (!state.lastBal || state.lastBal <= 0){
       throw new Error("Could not read account balance — check token and account type.");
     }
-    state.risk = window.CORE_R.riskInit(state.lastBal, readRiskCfg());
+    // keep same-day counters/stops across re-auth — the daily lock must survive reloads
+    restoreRisk();
+    if (!(state.risk && state.risk.dayKey === new Date().toDateString())){
+      state.risk = window.CORE_R.riskInit(state.lastBal, readRiskCfg());
+    }
     state.trades = 0; state.wins = 0;
     stats();
   }
@@ -1867,6 +1871,11 @@ if (typeof module !== "undefined" && module.exports){
     }
     try {
       $("btnArm").disabled = true;
+      // fail fast: a same-day persisted auto-stop refuses BEFORE burning an OTP round-trip
+      restoreRisk();
+      if (state.risk && state.risk.stopped && state.risk.dayKey === new Date().toDateString()){
+        throw new Error("Auto-stop active (" + state.risk.stopped + ") — press RESUME to continue (today's counters are kept).");
+      }
       await authConnect();
       try {
         const pk = Number(localStorage.getItem("dr_robot_peak") || 0);
@@ -1905,8 +1914,16 @@ if (typeof module !== "undefined" && module.exports){
       await maybeTrade();
     } catch (e){
       log("Arm failed: " + e.message, "e");
-      let hint;
-      if (/expired or is invalid|InvalidToken/i.test(e.message)){
+      let hint; let keepMode = false;
+      if (/Auto-stop active/i.test(e.message)){
+        // the risk lock refused us — reveal RESUME (the message tells the user to press it)
+        try { $("btnResume").style.display = ""; } catch(e2){}
+        keepMode = true;   // not an auth failure — leave the current session mode alone
+        const stopWhy = (state.risk && state.risk.stopped) || "";
+        hint = stopWhy === "daily_loss"
+          ? "The <b>" + readRiskCfg().dailyLossPct + "% daily loss lock</b> is active for today — the risk system doing its job (missed opportunity beats a low-quality trade). Press <b>RESUME (after auto-stop)</b> to continue with today's counters kept, or wait until tomorrow for a fresh day lock."
+          : "Press <b>RESUME (after auto-stop)</b> to continue — today's counters are kept.";
+      } else if (/expired or is invalid|InvalidToken/i.test(e.message)){
         hint = "<b>Deriv rejected the token</b> (direct mode — no App ID needed).<br>" +
           "• Regenerate it: app.deriv.com → <b>Settings → API tokens</b> → permissions <b>Read + Trade</b> → paste the fresh token.<br>" +
           "• Check the token hasn't expired or been revoked.";
@@ -1924,7 +1941,7 @@ if (typeof module !== "undefined" && module.exports){
         hint = "Token needs <b>Read + Trade</b> permissions and must be unexpired. In direct mode no App ID is required — see the journal for the exact errors from each path.";
       }
       banner("<b>Could not arm.</b> " + esc(e.message) + "<br>" + hint);
-      setMode(state.auth ? "scanning" : "disarmed");
+      if (!keepMode) setMode(state.auth ? "scanning" : "disarmed");
     } finally { $("btnArm").disabled = false; }
   });
 
@@ -2158,6 +2175,9 @@ if (typeof module !== "undefined" && module.exports){
     $("selAcct").value = localStorage.getItem("dr_robot_acct") || "demo";
     if ($("inpMinScore")) $("inpMinScore").value = String(state.calib.threshold);
   } catch(e){}
+  // surface a same-day auto-stop on load: banner + RESUME button (otherwise the
+  // "press RESUME" instruction points at a button that is still display:none after a reload)
+  try { if (state.risk && state.risk.stopped) autoStopBanner(state.risk.stopped); } catch(e){}
   setMode("disarmed"); stats();
 
   window.CORE_R_PUBLIC = true;

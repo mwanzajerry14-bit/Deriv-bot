@@ -236,7 +236,7 @@ function mkEl() {
 }
 const MockWS = makeMockWS();
 const htmlIds = new Set([...html.matchAll(/id="([A-Za-z0-9_]+)"/g)].map(m => m[1]));
-function buildSandbox() {
+function buildSandbox(seed) {
   MockWS.counts = {};   // per-scenario request counters
   MockWS.lastProposal = null;
   MockWS.lastTickReq = null;
@@ -247,6 +247,7 @@ function buildSandbox() {
   MockWS.proposals = [];
   const els = {};
   const store = {};
+  if (seed) Object.assign(store, seed);   // pre-boot localStorage (persisted risk, prefs…)
   const sandbox = {
     console,
     document: {
@@ -450,6 +451,43 @@ async function tradeFlow(els, tag) {
   check("s4: STOP works", s4.els.modePill.textContent === "STOPPED", s4.els.modePill.textContent);
   MockWS.rfMode = false;
   MockWS.tickMode = null;
+
+  // ---------- scenario 5: persisted daily-loss auto-stop after reload (RESUME discoverability) ----------
+  console.log("\n--- scenario 5: restored auto-stop — fail-fast ARM + visible RESUME");
+  const s5 = buildSandbox({
+    dr_robot_risk: JSON.stringify({
+      riskPct: 0.75, dailyLossPct: 3, dailyProfitPct: 5, maxConsec: 3, maxSession: 20,
+      cooldownSec: 30, smallMaxPct: 2, dayKey: new Date().toDateString(),
+      dayStartBal: 10000, dayPnl: -300, dayTrades: 5, sessionTrades: 3,
+      consecLosses: 0, cooldownUntil: 0, stopped: "daily_loss"
+    })
+  });
+  check("s5: reload with a same-day stop shows the stop banner + RESUME button",
+    /Daily loss lock — trading stopped for today\./.test(s5.els.log.innerHTML) &&
+    s5.els.btnResume.style.display === "",
+    JSON.stringify({ log: s5.els.log.innerHTML.slice(-300), resume: s5.els.btnResume.style.display }));
+  s5.els.inpToken.value = TOKEN;
+  await s5.els.btnArm._handlers.click();
+  await sleep(300);
+  const l5 = s5.els.log.innerHTML;
+  check("s5: ARM fails fast on the persisted stop (no OTP round-trip)",
+    /Arm failed: Auto-stop active \(daily_loss\)/.test(l5) &&
+    !/OTP ok|PAT detected|Direct token mode/.test(l5), l5.slice(-400));
+  check("s5: arm-fail hint names RESUME (not the token) and keeps RESUME visible",
+    /RESUME \(after auto-stop\)/.test(s5.els.banner.innerHTML) &&
+    !/Token needs/.test(s5.els.banner.innerHTML) &&
+    s5.els.btnResume.style.display === "",
+    s5.els.banner.innerHTML.slice(0, 400));
+  await s5.els.btnResume._handlers.click();
+  await sleep(600);
+  const l5r = s5.els.log.innerHTML;
+  check("s5: RESUME re-arms with day P/L kept (−$300.00)",
+    /▶ RESUMED — day P\/L kept \(−\$300\.00\)/.test(l5r) &&
+    s5.els.modePill.textContent === "ARMED" &&
+    s5.els.btnResume.style.display === "none",
+    JSON.stringify({ mode: s5.els.modePill.textContent, tail: l5r.slice(-300) }));
+  s5.els.btnStop._handlers.click();
+  check("s5: STOP works", s5.els.modePill.textContent === "STOPPED", s5.els.modePill.textContent);
 
   console.log(failures === 0 ? "\nROBOT E2E TEST PASSED ✓" : `\n${failures} FAILURES ✗`);
   process.exit(failures === 0 ? 0 : 1);
