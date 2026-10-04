@@ -153,6 +153,8 @@
         <div class="hint">Critical checks (HTF bias, sweep, BOS/CHOCH, CRT) are mandatory regardless. Threshold is validated in the Backtest Lab — 11 is a placeholder until then.</div></div>
       <div><label class="f">Rise/Fall gate (0–100, batch score)</label><input type="number" id="inpRfScore" value="90" min="50" max="100">
         <div class="hint">Classic engine: 4/4 live checks AND the batch-percentile trend score must clear this vs the current watchlist (90 = top decile — your original bot’s gate).</div></div>
+      <div><label class="f">Assumed win rate for the EV gate (%)</label><input type="number" id="inpWr" value="55" min="30" max="90" step="0.5">
+        <div class="hint">Declared assumption used by every engine’s EV math — not a backtest result. At a real quote of net 0.78 you need ≥56.1% to break even and ≥57.2% to clear the +0.02 gate; the gate log shows the raw ask/payout of every quoted proposal so you can verify the payout yourself.</div></div>
     </div>
     <div class="stats" id="stats">
       <div class="stat"><div class="k">Balance</div><div class="v" id="stBal">—</div></div>
@@ -1321,6 +1323,7 @@ if (typeof module !== "undefined" && module.exports){
       if (!state.pub || state.pub.readyState !== 1) throw new Error("socket not open");
       const now = Date.now();
       const strat = readStrategy();
+      state.calib.wrEstimate = readWrEstimate();   // freshest EV assumption for every engine's scan math
       const wantCandles = strat !== "digits";
       const wantTicks = strat !== "ict";
       const wantDig = strat === "digits" || strat === "both";
@@ -1670,6 +1673,11 @@ if (typeof module !== "undefined" && module.exports){
     const v = Number($("inpRfScore") ? $("inpRfScore").value : null);
     return isFinite(v) && v >= 50 && v <= 100 ? v : window.CORE_R.CONFIG.entryScore;  // hygiene: never 0
   }
+  /* EV-gate win-rate assumption — hygiene: out-of-range/empty falls back to the 0.55 default, never 0 */
+  function readWrEstimate(){
+    const v = Number($("inpWr") ? $("inpWr").value : null);
+    return (isFinite(v) && v >= 30 && v <= 90) ? v / 100 : 0.55;
+  }
   /* freshest REAL proposal measurement for symbol|expiry (ms TTL) — beats cached estimates */
   function measNetOf(sym, dur){
     const m = state.measNet && state.measNet.get(sym + "|" + dur);
@@ -1841,7 +1849,8 @@ if (typeof module !== "undefined" && module.exports){
                 " < min " + state.calib.evMin + " — probing " + candidates[ci + 1] + u + "…", "w");
             continue;
           }
-          log("✗ EV gate: best net " + net.toFixed(3) + " → EV " + ev.toFixed(3) + " < min " +
+          log("✗ EV gate: best net " + net.toFixed(3) + " (ask " + Number(price).toFixed(2) +
+              " → payout " + Number(prop.payout).toFixed(2) + ") → EV " + ev.toFixed(3) + " < min " +
               state.calib.evMin + (candidates.length > 1
                 ? " — NO TRADE (payout too low at every expiry). Payouts vary by duration; the scan re-probes automatically in ~10 min."
                 : " — NO TRADE (payout too low for this stake)."), "w");
@@ -2045,6 +2054,7 @@ if (typeof module !== "undefined" && module.exports){
       setMode("armed");
       banner("");
       const stratA = readStrategy();
+      state.calib.wrEstimate = readWrEstimate();   // EV math on buys uses the same declared assumption
       if (stratA === "streak" || stratA === "both"){
         // fresh chain per ARM (XML Start: stake=base, streak=0, wait=0) — recompute base/cap here
         state.streak = window.CORE_R.streakInit(state.lastBal);
@@ -2257,6 +2267,14 @@ if (typeof module !== "undefined" && module.exports){
     savePrefs();
     log("Expiry default → " + v + "m for all markets (per-market override lives in profiles).", "i");
   });
+  $("inpWr") && $("inpWr").addEventListener("change", () => {
+    const wr = readWrEstimate();
+    state.calib.wrEstimate = wr;
+    savePrefs();
+    log("EV assumed win rate → " + (wr * 100).toFixed(1) + "% (break-even net " +
+        ((1 - wr) / wr).toFixed(3) + " · gate +" + state.calib.evMin + " needs net " +
+        ((state.calib.evMin + 1 - wr) / wr).toFixed(3) + ").", "i");
+  });
 
   /* ---------- LOG: full trade history + post-50 condition analysis ---------- */
   function renderLog(){
@@ -2325,6 +2343,7 @@ if (typeof module !== "undefined" && module.exports){
     $("inpApp").value = localStorage.getItem("dr_robot_app") || "1089";
     $("selAcct").value = localStorage.getItem("dr_robot_acct") || "demo";
     if ($("inpMinScore")) $("inpMinScore").value = String(state.calib.threshold);
+    if ($("inpWr")) $("inpWr").value = String(Math.round((state.calib.wrEstimate || 0.55) * 1000) / 10);
   } catch(e){}
   // surface a same-day auto-stop on load: banner + RESUME button (otherwise the
   // "press RESUME" instruction points at a button that is still display:none after a reload)
