@@ -136,8 +136,9 @@
         <option value="ict" selected>ICT/SMC trends (13-point)</option>
         <option value="rf">Rise/Fall — classic trend (score ≥90)</option>
         <option value="digits">Digits — Even/Odd · Matches · Differs</option>
+        <option value="streak">Streak Scaling — 5-tick trend (×2 per win, reset on loss)</option>
         <option value="both">Both — best EV wins</option></select>
-        <div class="hint">All strategies share the same flat-stake risk locks.</div></div>
+        <div class="hint">ICT / Rise/Fall / Digits trade flat stakes; Streak doubles its 2% stake after each win (8% cap) and resets on a loss — it never raises a stake after a loss. All share the same daily risk locks.</div></div>
       <div><label class="f">Expiry for all markets (minutes)</label><select id="inpExpiry"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="5">5</option><option value="10">10</option></select>
         <div class="hint">Best expiry is found in the Backtest Lab and applied automatically.</div></div>
       <div><label class="f">Risk per trade (% of balance)</label><input type="number" id="inpRisk" value="0.75" min="0.5" max="1" step="0.05">
@@ -665,6 +666,64 @@ function riseFallBatch(rows, minScore, evOf, evMin){
   });
   return rows;
 }
+/* ================= Streak Scaling (V10 XML signal; stake chain INVERTED by user decision) ======
+ XML: 5-tick CALL/PUT on 1m candles. c2 (2nd-last CLOSED candle) picks the branch; 4/4 checks fire
+ it: (1) c1 direction agrees, (2) tick vs c2 close, (3) c2 body ≥ 30% of range, (4) tick1 vs tick10.
+ After every trade: wait = 10 ticks of that symbol. base = 2% of balance (floor $0.35),
+ cap = 8% (floor $0.70). USER DECISION (never after a loss — martingale rule stays intact):
+ WIN  → streak n++, stake ×2 capped at cap.
+ LOSS → streak resets to 0, stake resets to base.  (XML doubles after a loss — explicitly NOT that.) */
+function streakInit(bal){
+  const b = Math.max(MIN_STAKE, round2((Number(bal) || 0) * 0.02));
+  const c = Math.max(0.70, round2((Number(bal) || 0) * 0.08));
+  return { n: 0, stake: b, base: b, cap: c, wait: 0, lastSym: null };
+}
+function streakStake(ch, bal){
+  if (bal == null || !isFinite(bal) || bal < MIN_STAKE)
+    return { ok: false, reason: "Balance is below the $0.35 minimum stake — top up to keep the streak chain running." };
+  if (!ch) return { ok: false, reason: "streak chain not initialised — re-arm to trade." };
+  let st = round2(ch.stake);
+  if (bal < st) st = round2(bal);                      // XML shrink-to-affordable (stake never exceeds balance)
+  if (st < MIN_STAKE)
+    return { ok: false, reason: "Balance cannot cover the $0.35 minimum stake — top up to keep the streak chain running." };
+  return { ok: true, stake: st };
+}
+function streakSettle(ch, won, bal, sym){
+  const base = Math.max(MIN_STAKE, round2((Number(bal) || 0) * 0.02));
+  const cap  = Math.max(0.70, round2((Number(bal) || 0) * 0.08));
+  const out = { n: ch.n || 0, stake: ch.stake, base, cap, wait: 10, lastSym: sym || (ch.lastSym || null) };
+  if (won){ out.n = (ch.n || 0) + 1; out.stake = Math.min(round2(ch.stake * 2), cap); }
+  else    { out.n = 0; out.stake = base; }             // reset after a loss — NEVER increase after a loss
+  return out;
+}
+function streakTickWait(ch, added){                    // XML tick_analysis: wait −= 1 per incoming tick
+  if (ch && ch.wait > 0 && added > 0) ch.wait = Math.max(0, ch.wait - added);
+  return ch;
+}
+function streakSignal(cRaw, tps, nowSec){
+  if (!cRaw || cRaw.length < 3 || !tps || tps.length < 10) return null;
+  const last = cRaw[cRaw.length - 1];
+  const isLive = !!last && (nowSec - last.epoch) < CONFIG.granularity;
+  // XML reads the LIVE chart (idx0 = forming candle). A snapshot without a live forming bar is
+  // stale — the c1/c2 pairing would shift one candle back, so refuse rather than trade on it.
+  if (!isLive)
+    return { side: null, checks: [false, false, false, false], passed: 0, ok: false, note: "waiting for live candle" };
+  const closed = cRaw.slice(0, -1);
+  const m = closed.length;
+  if (m < 2) return { side: null, checks: [false, false, false, false], passed: 0, ok: false, note: "warming up" };
+  const c2 = closed[m - 2], c1 = closed[m - 1];        // XML idx2 / idx1
+  const t1 = Number(tps[tps.length - 1]);              // XML tick = current price (FROM_END 1)
+  const t10 = Number(tps[tps.length - 10]);            // XML tick(FROM_END 10)
+  const call = c2.close > c2.open;                     // outer branch — doji (close==open) falls to PUT
+  const range = c2.high - c2.low;
+  const body = call ? (c2.close - c2.open) : (c2.open - c2.close);
+  const checks = call
+    ? [c1.close > c1.open, t1 > c2.close, body >= range * 0.3, t1 > t10]
+    : [c1.close < c1.open, t1 < c2.close, body >= range * 0.3, t1 < t10];
+  const side = call ? "CALL" : "PUT";
+  const passed = checks.filter(Boolean).length;
+  return { side, checks, passed, ok: passed === 4, note: passed === 4 ? "qualified" : "no direction" };
+}
 /* HTF bias: 1h structure + 15m structure must agree */
 function htfBiasOf(c1h, c15m){
   const a = structureOf(c1h), b = structureOf(c15m);
@@ -900,6 +959,7 @@ if (typeof window !== "undefined"){
   const _eng = { atrOf, swingsOf, structureOf, dealingRange, zoneAt, lastFVG, displacementAt,
     sweepNear, crtOf, regimeOf, chaseBlock, momentumOf, htfBiasOf, evaluateICT,
     pipDecimals, lastDigitOf, parityState, digitStatsOf, evaluateDigits, riseFallBatch,
+    streakSignal, streakInit, streakStake, streakSettle, streakTickWait,
     MIN_STAKE, riskInit, stakeFor, riskClock, riskCanTrade, riskOnResult, riskResume,
     agg1m, metricsOf, splitChrono, sweepThreshold, monteCarlo, backtestRun };
   window.CORE_R = Object.assign({ CONFIG, round2, sign, computeMetrics, botReadyState, percentileRanks, rankRows,
@@ -909,6 +969,7 @@ if (typeof module !== "undefined" && module.exports){
   const _eng = { atrOf, swingsOf, structureOf, dealingRange, zoneAt, lastFVG, displacementAt,
     sweepNear, crtOf, regimeOf, chaseBlock, momentumOf, htfBiasOf, evaluateICT,
     pipDecimals, lastDigitOf, parityState, digitStatsOf, evaluateDigits, riseFallBatch,
+    streakSignal, streakInit, streakStake, streakSettle, streakTickWait,
     MIN_STAKE, riskInit, stakeFor, riskClock, riskCanTrade, riskOnResult, riskResume,
     agg1m, metricsOf, splitChrono, sweepThreshold, monteCarlo, backtestRun };
   module.exports = Object.assign({ CONFIG, round2, sign, computeMetrics, botReadyState, percentileRanks, rankRows,
@@ -929,6 +990,7 @@ if (typeof module !== "undefined" && module.exports){
     hist: new Map(), nextHist: new Map(), histFail: new Map(), reconnAt: 0,
     ticks: new Map(), nextTicks: new Map(), tickFail: new Map(),
     measNet: new Map(),   // real measured payouts per symbol|expiry (10 min TTL at scan)
+    streak: null,         // Streak Scaling chain {n, stake, base, cap, wait, lastSym} (armed only)
     inTrade: false, current: null, cooldownUntil: 0,
     trades: 0, wins: 0, started: false,
     calib: { threshold: 11, wrEstimate: 0.55, evMin: 0.02, source: "default" },
@@ -987,7 +1049,9 @@ if (typeof module !== "undefined" && module.exports){
       const el = $("stPl");
       el.textContent = (pl >= 0 ? "+$" : "−$") + Math.abs(pl).toFixed(2);
       el.className = "v " + (pl >= 0 ? "pos" : "neg");
-      const sf = window.CORE_R.stakeFor(state.lastBal, r);
+      const sf = (readStrategy() === "streak" && state.streak)
+        ? window.CORE_R.streakStake(state.streak, state.lastBal)   // chain stake, not the flat %
+        : window.CORE_R.stakeFor(state.lastBal, r);
       $("stStake").textContent = sf.ok ? "$" + sf.stake.toFixed(2) : "BLOCKED";
       $("stStreak").textContent = String(r.consecLosses || 0) + " / " + readRiskCfg().maxConsec;
       $("stTPSL").textContent = "−" + readRiskCfg().dailyLossPct + "% / +" + readRiskCfg().dailyProfitPct + "%";
@@ -1080,14 +1144,27 @@ if (typeof module !== "undefined" && module.exports){
     }
     return (state.hist.get(sym) || []).length;
   }
-  /* latest 1000 ticks — digit strategies (parity + histogram).
+  /* latest 1000 ticks — digit strategies (parity + histogram) + streak tick-stream freshness.
      NOTE: the public endpoint REJECTS style=ticks without an explicit `end`
      (InputValidationFailed: "end Missing property") — always send end:"latest". */
   async function loadTicks(sym){
+    const prev = state.ticks.get(sym) || [];
     const r = await wsSend(state.pub, { ticks_history: sym, style: "ticks", count: 1000, end: "latest" });
     const prices = (r.history && r.history.prices) || [];
     if (!prices.length) throw new Error("no ticks");
-    state.ticks.set(sym, prices.slice(-1000));
+    const next = prices.slice(-1000);
+    state.ticks.set(sym, next);
+    // XML tick_analysis: the streak wait counts 10 ticks of the TRADED symbol only.
+    // Compare snapshots: genuinely-new prices since the last load (0 on an unchanged stream).
+    if (state.streak && state.streak.lastSym === sym && prev.length){
+      const pos = next.lastIndexOf(prev[prev.length - 1]);
+      const added = pos >= 0 ? (next.length - 1 - pos)
+        : (next.length > prev.length ? next.length - prev.length : 0);
+      const before = state.streak.wait;
+      window.CORE_R.streakTickWait(state.streak, added);
+      if (before > 0 && state.streak.wait === 0)
+        log("⏳ Streak wait over (10 ticks seen) — scanning resumes.", "i");
+    }
     return prices.length;
   }
   function mtfFrom(c1){
@@ -1162,6 +1239,27 @@ if (typeof module !== "undefined" && module.exports){
           "<td>" + st + "</td></tr>";
         return;
       }
+      // ---------- Streak Scaling view (5-tick trend; Score col shows the chain ×n) ----------
+      if (strat === "streak" && r.streak){
+        const a = r.streak;
+        const chk = a.checks.map(dot).join(" ");
+        const w = (state.streak && state.streak.wait) || 0;
+        const n = (state.streak && state.streak.n) || 0;
+        if (!busy){
+          if (r.activeSig){ st = "✓ QUALIFIED (" + r.activeSig.short + ")"; cls = ' class="qual"'; }
+          else if (w > 0 && a.side) st = "streak wait: " + w + " ticks left";
+          else if (a.side && a.ok && a.ev < state.calib.evMin) st = "EV gate: payout too low (re-probes ~10m)";
+          else if (a.side) st = "watch: " + (a.passed || 0) + "/4 checks";
+          else st = "watch: " + (a.note || "no direction");
+        }
+        html += "<tr" + cls + "><td>" + (i + 1) + "</td>" + base +
+          "<td><b>" + (n ? "×" + n : "–") + "</b></td>" +
+          "<td>" + (a.side ? '<span class="chip ' + (r.activeSig ? "ready" : "part") + '">' + a.side + "</span>" : '<span class="chip no">–</span>') + "</td>" +
+          "<td style='font-size:11px'>" + (a.side ? "5t · EV " + a.ev : "–") + "</td>" +
+          "<td style='font-size:13px;letter-spacing:2px'>" + chk + "</td>" +
+          "<td>" + st + "</td></tr>";
+        return;
+      }
       // ---------- ICT view (unchanged shape; Rise/Fall/digit signals overlay in "both") ----------
       const c = r.checks || {};
       const chk = [c.htf, c.sweep, c.bosChoch, c.crt].map(dot).join(" ") +
@@ -1198,6 +1296,7 @@ if (typeof module !== "undefined" && module.exports){
           ev: row.ev, regime: row.regime, checks: row.checks, expiry: row.expiry }
       : null;
     const rfSig = (strat === "rf" || strat === "both") ? (row.rfSignal || null) : null;
+    const streakSig = (strat === "streak" || strat === "both") ? (row.streakSig || null) : null;
     let digSig = null;
     if ((strat === "digits" || strat === "both") && row.dig){
       const el = row.dig.signals.filter(x => x.eligible);
@@ -1206,9 +1305,11 @@ if (typeof module !== "undefined" && module.exports){
     if (strat === "ict") return ictSig;
     if (strat === "digits") return digSig;
     if (strat === "rf") return rfSig;
+    if (strat === "streak") return streakSig;
     // both: highest scan-time EV wins (ties → the first listed)
     let best = ictSig;
     if (rfSig && (!best || (rfSig.ev || 0) > (best.ev || 0))) best = rfSig;
+    if (streakSig && (!best || (streakSig.ev || 0) > (best.ev || 0))) best = streakSig;
     if (digSig && (!best || (digSig.ev || 0) > (best.ev || 0))) best = digSig;
     return best;
   }
@@ -1224,8 +1325,10 @@ if (typeof module !== "undefined" && module.exports){
       const wantTicks = strat !== "ict";
       const wantDig = strat === "digits" || strat === "both";
       const wantRF = strat === "rf" || strat === "both";
-      // Rise/Fall reads the LIVE (forming) candle — keep candle snapshots fresh
-      const histTTL = (strat === "rf" || strat === "both") ? 20000 : 90000;
+      const wantStreak = strat === "streak" || strat === "both";
+      // Rise/Fall reads the LIVE (forming) candle; Streak's c1/c2 pairing shifts if the snapshot
+      // misses a candle boundary — both need fresh snapshots (20s), not the 90s ICT default
+      const histTTL = (strat === "rf" || strat === "both" || strat === "streak") ? 20000 : 90000;
       const stale = state.symbols.filter(s => {
         const cDue = wantCandles && (!state.hist.has(s.symbol) || (state.nextHist.get(s.symbol) || 0) < now);
         const tDue = wantTicks && (!state.ticks.has(s.symbol) || (state.nextTicks.get(s.symbol) || 0) < now);
@@ -1329,6 +1432,24 @@ if (typeof module !== "undefined" && module.exports){
           const cRaw = state.hist.get(s.symbol);   // raw array: Rise/Fall needs the forming candle
           if (cRaw && cRaw.length >= 3 && tps && tps.length >= 11){
             row.rf = window.CORE_R.analyzeSymbol(s, cRaw, tps, nowSec);
+            haveAny = true;
+          }
+        }
+        if (wantStreak){
+          const cRaw = state.hist.get(s.symbol);   // raw incl. forming — streakSignal enforces isLive
+          const sig5 = (cRaw && tps && tps.length >= 10)
+            ? window.CORE_R.streakSignal(cRaw, tps, nowSec) : null;
+          if (sig5){
+            const net5 = measNetOf(s.symbol, "5t") || payoutNetOf(s.symbol);   // key "sym|5t" (rf owns "sym|5")
+            const ev5 = round2((state.calib.wrEstimate * net5 - (1 - state.calib.wrEstimate)) * 1000) / 1000;
+            const waitLeft = state.streak ? state.streak.wait : 0;
+            row.streak = { side: sig5.side, checks: sig5.checks, passed: sig5.passed,
+                           ok: sig5.ok, note: sig5.note, ev: ev5, wait: waitLeft };
+            // wait>0 = XML before_purchase gate: signal may render but never goes active
+            if (sig5.ok && waitLeft <= 0 && (ev5 == null || ev5 >= state.calib.evMin)){
+              row.streakSig = { strategy: "streak", side: sig5.side, short: sig5.side,
+                                checks: sig5.checks, ev: ev5, ticks: 5, wr: state.calib.wrEstimate };
+            }
             haveAny = true;
           }
         }
@@ -1543,7 +1664,7 @@ if (typeof module !== "undefined" && module.exports){
   }
   function readStrategy(){
     const v = $("selStrategy") ? String($("selStrategy").value || "") : "";
-    return (v === "digits" || v === "both" || v === "rf") ? v : "ict";
+    return (v === "digits" || v === "both" || v === "rf" || v === "streak") ? v : "ict";
   }
   function readRfScore(){
     const v = Number($("inpRfScore") ? $("inpRfScore").value : null);
@@ -1631,10 +1752,16 @@ if (typeof module !== "undefined" && module.exports){
         ? { strategy: "rise-fall", symbol: row0.symbol, displayName: row0.displayName,
             side: as.side, score: as.score, ev: as.ev, regime: as.regime, checks: as.checks,
             expiry: profileOf(row0.symbol).expiry }
-        : { strategy: "ict", symbol: row0.symbol, displayName: row0.displayName,
-          side: row0.side, score: row0.score, ev: row0.ev, regime: row0.regime,
-          checks: row0.checks, expiry: row0.expiry };
-    const sf = window.CORE_R.stakeFor(state.lastBal, state.risk);
+        : as.strategy === "streak"
+          ? { strategy: "streak", symbol: row0.symbol, displayName: row0.displayName,
+              side: as.side, checks: as.checks, ev: as.ev, ticks: 5, wr: state.calib.wrEstimate }
+          : { strategy: "ict", symbol: row0.symbol, displayName: row0.displayName,
+            side: row0.side, score: row0.score, ev: row0.ev, regime: row0.regime,
+            checks: row0.checks, expiry: row0.expiry };
+    const sf = as.strategy === "streak"
+      ? (state.streak || (state.streak = window.CORE_R.streakInit(state.lastBal)),
+         window.CORE_R.streakStake(state.streak, state.lastBal))
+      : window.CORE_R.stakeFor(state.lastBal, state.risk);
     if (!sf.ok){
       log("⛔ " + sf.reason, "e"); setMode("scanning");
       banner("<b>⛔ " + sf.reason + "</b> Small-account survival mode: no trade.");
@@ -1644,6 +1771,10 @@ if (typeof module !== "undefined" && module.exports){
         (sig.strategy === "digits"
           ? sig.label + " · EV≈" + (sig.ev != null ? sig.ev.toFixed(3) : "—") +
             " → stake $" + sf.stake.toFixed(2) + " (" + sig.ticks + "t)"
+          : sig.strategy === "streak"
+            ? sig.side + " · streak ×" + ((state.streak && state.streak.n) || 0) +
+              " · EV≈" + (sig.ev != null ? sig.ev.toFixed(3) : "—") +
+              " → stake $" + sf.stake.toFixed(2) + " (" + sig.ticks + "t)"
           : sig.strategy === "rise-fall"
             ? sig.side + " · score " + sig.score + "/100 · " + sig.regime.type +
               " · EV≈" + (sig.ev != null ? sig.ev.toFixed(3) : "—") +
@@ -1664,10 +1795,12 @@ if (typeof module !== "undefined" && module.exports){
 
   async function proposeAndBuy(sig, stake){
     const isDig = sig.strategy === "digits";
+    // tick-duration path: digits (1–10t) and streak (fixed 5t CALL/PUT) — minute path: ICT / Rise-Fall
+    const tickDur = isDig || sig.strategy === "streak";
     // candidate durations: the selected expiry first, then shortest→longest. Payouts vary
     // sharply by duration (live quotes at 5m ran ~0.78 net while 1m can pay far better),
     // so a poor quote at one expiry must not kill an otherwise-valid setup.
-    const candidates = isDig ? [sig.ticks]
+    const candidates = tickDur ? [sig.ticks]
       : [Number(profileOf(sig.symbol).expiry) || 1, 1, 2, 3, 5, 10]
           .filter((v, i, a) => a.indexOf(v) === i);
     for (let ci = 0; ci < candidates.length; ci++){
@@ -1679,7 +1812,7 @@ if (typeof module !== "undefined" && module.exports){
         contract_type: isDig ? sig.contract : sig.side,
         currency: state.currency || "USD",
         duration: dur,
-        duration_unit: isDig ? "t" : "m",
+        duration_unit: tickDur ? "t" : "m",
         underlying_symbol: sig.symbol
       };
       if (isDig && (sig.kind === "match" || sig.kind === "diff")) req.barrier = String(sig.digit);
@@ -1696,12 +1829,13 @@ if (typeof module !== "undefined" && module.exports){
         const ev = wr * net - (1 - wr);
         state.current.proposalNet = round2(net * 1000) / 1000;
         if (!isDig){
-          // remember the REAL measurement per symbol+expiry (used by scans for 10 min)
-          state.measNet.set(sig.symbol + "|" + dur, { net: state.current.proposalNet, t: Date.now() });
+          // remember the REAL measurement (streak keys "sym|5t" — rf owns "sym|5" for 5-MINUTE)
+          const mKey = sig.symbol + "|" + dur + (sig.strategy === "streak" ? "t" : "");
+          state.measNet.set(mKey, { net: state.current.proposalNet, t: Date.now() });
         }
         if (ev < state.calib.evMin){
           const more = ci < candidates.length - 1;
-          const u = isDig ? "t" : "m";
+          const u = tickDur ? "t" : "m";
           if (more){
             log("✗ EV gate: " + dur + u + " net " + net.toFixed(3) + " → EV " + ev.toFixed(3) +
                 " < min " + state.calib.evMin + " — probing " + candidates[ci + 1] + u + "…", "w");
@@ -1716,14 +1850,15 @@ if (typeof module !== "undefined" && module.exports){
           state.cooldownUntil = Date.now() + 15000;
           return;
         }
-        if (!isDig){   // digit payouts differ per contract type — never pollute the ICT profile
+        if (!isDig && sig.strategy !== "streak"){   // digit payouts differ per contract type — and the 5t
+          // streak net must not pollute the minute-expiry ICT/Rise-Fall profile (its own "sym|5t" key covers it)
           const prof = profileOf(sig.symbol);
           prof.payoutNet = round2(net * 1000) / 1000;   // remember measured payout for scans
           state.profiles[sig.symbol] = prof; savePrefs();
         }
       }
       log("Proposal ok — price " + price + (prop.payout ? " · payout " + prop.payout : "") +
-          (ci > 0 ? " (" + dur + (isDig ? "t" : "m") + " after EV probe)" : ""), "i");
+          (ci > 0 ? " (" + dur + (tickDur ? "t" : "m") + " after EV probe)" : ""), "i");
       const b = await wsSend(state.auth, { buy: buyTok, price: String(price) }, 12000);
       const buy = deepFind(b, "buy") || b;
       const cid = buy.contract_id != null ? buy.contract_id : (buy.id != null ? buy.id : deepFind(b, "contract_id"));
@@ -1793,6 +1928,14 @@ if (typeof module !== "undefined" && module.exports){
         " · " + (pnl >= 0 ? "+" : "−") + "$" + Math.abs(pnl).toFixed(2) +
         (state.risk ? " · day P/L " + (state.risk.dayPnl >= 0 ? "+" : "−") + "$" + Math.abs(state.risk.dayPnl).toFixed(2) +
           " · consec " + state.risk.consecLosses : ""), won ? "s" : "w");
+    // ---- streak chain (user decision: ×2 per WIN up to 8% cap, RESET on loss — never raised after a loss) ----
+    if (cur.sig && cur.sig.strategy === "streak"){
+      state.streak = window.CORE_R.streakSettle(
+        state.streak || window.CORE_R.streakInit(state.lastBal), won, state.lastBal, cur.sig.symbol);
+      const ch = state.streak;
+      log("🎯 Streak closed — ×" + ch.n + " · next $" + ch.stake.toFixed(2) +
+          " (base $" + ch.base.toFixed(2) + " · cap $" + ch.cap.toFixed(2) + ") · wait " + ch.wait + "t", "s");
+    }
     state.inTrade = false; state.current = null;
     if (state.lastBal == null || state.lastBal <= 0){
       log("⛔ Balance unusable — disarming.", "e"); setMode("scanning");
@@ -1822,10 +1965,10 @@ if (typeof module !== "undefined" && module.exports){
     const entry = {
       t: Date.now(), symbol: s.symbol, name: s.displayName, side: s.side, score: s.score,
       st: s.strategy || "ict", ct: s.contract || null, dig: (s.kind && s.kind !== "parity") ? s.digit : null,
-      regime: s.strategy === "digits" ? "digits" : ((s.regime && s.regime.type) || "?"),
+      regime: s.strategy === "digits" ? "digits" : s.strategy === "streak" ? "streak" : ((s.regime && s.regime.type) || "?"),
       checks: s.checks || {}, ev: s.ev,
       net: cur.proposalNet || null, stake: cur.stake,
-      expiry: s.strategy === "digits" ? (s.ticks + "t") : s.expiry, won: !!won, pnl: pnl
+      expiry: (s.strategy === "digits" || s.strategy === "streak") ? (s.ticks + "t") : s.expiry, won: !!won, pnl: pnl
     };
     state.tradeLog.push(entry);
     if (state.tradeLog.length > 300) state.tradeLog = state.tradeLog.slice(-300);
@@ -1902,11 +2045,19 @@ if (typeof module !== "undefined" && module.exports){
       setMode("armed");
       banner("");
       const stratA = readStrategy();
+      if (stratA === "streak" || stratA === "both"){
+        // fresh chain per ARM (XML Start: stake=base, streak=0, wait=0) — recompute base/cap here
+        state.streak = window.CORE_R.streakInit(state.lastBal);
+        log("🎯 Streak chain armed — base $" + state.streak.base.toFixed(2) +
+            " (2%) → cap $" + state.streak.cap.toFixed(2) + " (8%) · ×2 per win · reset on loss · 10-tick wait.", "i");
+      }
       log("🤖 ARMED — flat " + readRiskCfg().riskPct + "%/trade, " +
           (stratA === "digits"
             ? "digit signals (parity ≥" + readDigCfg().minAgree + "/10 + match/diff shares) gated by the real-payout EV."
             : stratA === "rf"
               ? "Rise/Fall trend gate — score ≥" + readRfScore() + " with 4/4 live checks, real-payout EV gate."
+              : stratA === "streak"
+                ? "streak scaling — 5-tick CALL/PUT on 4/4 candle checks, chain stake (×2/win, 8% cap, reset on loss), real-payout EV gate."
               : stratA === "both"
                 ? "ICT ≥" + state.calib.threshold + ", Rise/Fall ≥" + readRfScore() + " or digit signals — best EV wins, under the real-payout EV gate."
                 : "will buy the first setup scoring ≥" + state.calib.threshold + " with all critical checks green."), "s");

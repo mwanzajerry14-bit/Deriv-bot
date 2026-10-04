@@ -362,5 +362,109 @@ const evEdge = [mkRF("F", metWin, ready4("CALL"))];
 C.riseFallBatch(evEdge, 90, () => 0.02);
 ok("rise/fall: EV exactly at the floor passes", !!evEdge[0].rfSignal, JSON.stringify(evEdge[0].rfSignal));
 
+/* ================= Streak Scaling (V10 XML signal + INVERTED stake chain) ================= */
+{
+  const NOW = Math.floor(Date.now() / 1000);
+  const mk = (epoch, o, h, l, c) => ({ epoch, open: o, high: h, low: l, close: c });
+  // closed = [filler, c2, c1]; forming last (live = epoch within granularity of now)
+  const mkC = (c2o, c2c, c1o, c1c, opts) => {
+    opts = opts || {};
+    const formEpoch = opts.formEpoch != null ? opts.formEpoch : NOW - 5;
+    return [ mk(NOW - 600, 100, 101, 99, 100.5),
+             mk(NOW - 180, c2o, Math.max(c2o, c2c) + 2, Math.min(c2o, c2c) - 1, c2c),
+             mk(NOW - 120, c1o, Math.max(c1o, c1c) + 1, Math.min(c1o, c1c) - 1, c1c),
+             mk(formEpoch, 101, 102, 100, 101.5) ];
+  };
+  const upTicks   = ["105", "106", "107", "108", "109", "110", "111", "112", "113", "114"];
+  const downTicks = ["104", "103", "102", "101", "100", "99", "98", "97", "96", "95"];
+
+  const callS = C.streakSignal(mkC(100, 104, 100, 103), upTicks, NOW);
+  ok("streak: bullish c2/c1 + tick>close + rising stream → CALL 4/4",
+    callS && callS.side === "CALL" && callS.passed === 4 && callS.ok === true,
+    JSON.stringify(callS));
+  const putS = C.streakSignal(mkC(110, 106, 106, 104), downTicks, NOW);
+  ok("streak: bearish c2/c1 + tick<close + falling stream → PUT 4/4",
+    putS && putS.side === "PUT" && putS.passed === 4 && putS.ok === true,
+    JSON.stringify(putS));
+  const badC1 = C.streakSignal(mkC(100, 104, 103, 100), upTicks, NOW);   // c1 bearish under CALL branch
+  ok("streak: c1 direction disagree → 3/4, not ok",
+    badC1 && badC1.side === "CALL" && badC1.passed === 3 && badC1.ok === false &&
+    badC1.checks[0] === false, JSON.stringify(badC1));
+  const weakBody = C.streakSignal(
+    [{ epoch: NOW - 600, open: 100, high: 101, low: 99, close: 100.5 },
+     { epoch: NOW - 180, open: 100, high: 106, low: 99, close: 100.5 },   // body 0.5 vs range 7 (≥2.1 required)
+     { epoch: NOW - 120, open: 100.5, high: 104, low: 100, close: 103 },
+     { epoch: NOW - 5, open: 101, high: 102, low: 100, close: 101.5 }], upTicks, NOW);
+  ok("streak: c2 body < 30% of range → check fails (3/4)",
+    weakBody && weakBody.side === "CALL" && weakBody.passed === 3 && weakBody.checks[2] === false,
+    JSON.stringify(weakBody));
+  const wrongTrend = C.streakSignal(mkC(100, 104, 100, 103),
+    ["114", "113", "112", "111", "110", "109", "108", "107", "106", "105"], NOW);  // above close 104 but falling
+  ok("streak: tick1<tick10 under CALL branch → check fails (3/4)",
+    wrongTrend && wrongTrend.passed === 3 && wrongTrend.checks[3] === false,
+    JSON.stringify(wrongTrend));
+  const wrongTick = C.streakSignal(mkC(100, 104, 100, 103),
+    ["90", "91", "92", "93", "94", "95", "96", "97", "98", "99"], NOW);  // rising but below c2.close 104
+  ok("streak: tick ≤ c2.close → check fails (3/4)",
+    wrongTick && wrongTick.passed === 3 && wrongTick.checks[1] === false, JSON.stringify(wrongTick));
+  const stale = C.streakSignal(mkC(100, 104, 100, 103, { formEpoch: NOW - 120 }), upTicks, NOW);
+  ok("streak: snapshot without a LIVE forming candle refuses to signal",
+    stale && stale.side === null && stale.ok === false && /live candle/.test(stale.note),
+    JSON.stringify(stale));
+  const doji = C.streakSignal(
+    [{ epoch: NOW - 600, open: 100, high: 101, low: 99, close: 100.5 },
+     { epoch: NOW - 180, open: 102, high: 103, low: 101, close: 102 },    // doji with wicks → PUT branch
+     { epoch: NOW - 120, open: 102, high: 103, low: 100, close: 101 },
+     { epoch: NOW - 5, open: 101, high: 102, low: 100, close: 101.5 }],
+    downTicks, NOW);
+  ok("streak: doji c2 falls to the PUT branch (XML structure), body check fails on wicks",
+    doji && doji.side === "PUT" && doji.checks[2] === false && doji.ok === false, JSON.stringify(doji));
+  eq("streak: tps shorter than 10 → null", C.streakSignal(mkC(100, 104, 100, 103), upTicks.slice(0, 9), NOW), null);
+  eq("streak: fewer than 3 candles → null", C.streakSignal(mkC(100, 104, 100, 103).slice(0, 2), upTicks, NOW), null);
+
+  /* ---- stake chain (INVERTED: ×2 per win up to 8% cap; reset on loss — never after a loss) ---- */
+  const i0 = C.streakInit(1000);
+  ok("streak init: 2% base $20, 8% cap $80, n=0, wait=0",
+    i0.base === 20 && i0.cap === 80 && i0.stake === 20 && i0.n === 0 && i0.wait === 0,
+    JSON.stringify(i0));
+  const i5 = C.streakInit(5);
+  ok("streak init floors: tiny balance → base $0.35, cap $0.70",
+    i5.base === 0.35 && i5.cap === 0.7, JSON.stringify(i5));
+  const i10 = C.streakInit(10);
+  ok("streak init: $10 balance → cap 0.80 beats the 0.70 floor",
+    i10.base === 0.35 && i10.cap === 0.8, JSON.stringify(i10));
+  ok("streak stake: happy path returns base",
+    C.streakStake(i0, 1000).ok === true && C.streakStake(i0, 1000).stake === 20,
+    JSON.stringify(C.streakStake(i0, 1000)));
+  ok("streak stake: balance < stake shrinks to affordable",
+    C.streakStake(i0, 15).ok === true && C.streakStake(i0, 15).stake === 15,
+    JSON.stringify(C.streakStake(i0, 15)));
+  ok("streak stake: balance below $0.35 refused",
+    C.streakStake(i0, 0.30).ok === false, JSON.stringify(C.streakStake(i0, 0.30)));
+
+  const w1 = C.streakSettle(i0, true, 1017.72, "R_10");
+  ok("streak win 1: n=1, stake ×2 → $40, wait=10, lastSym set, base/cap recomputed",
+    w1.n === 1 && w1.stake === 40 && w1.wait === 10 && w1.lastSym === "R_10" &&
+    w1.base === 20.35 && w1.cap === 81.42, JSON.stringify(w1));
+  const w2 = C.streakSettle(w1, true, 1053.16, "R_10");
+  ok("streak win 2: n=2, stake $80 (still under cap)",
+    w2.n === 2 && w2.stake === 80 && w2.wait === 10, JSON.stringify(w2));
+  const w3 = C.streakSettle(w2, true, 1124.04, "R_10");
+  ok("streak win 3: ×2 would be $160 → capped at 8% ($89.92)",
+    w3.n === 3 && w3.stake === 89.92 && w3.cap === 89.92, JSON.stringify(w3));
+  const loss = C.streakSettle(w3, false, 1100, "R_10");
+  ok("streak LOSS: resets n=0 and stake=base — NEVER increases after a loss",
+    loss.n === 0 && loss.stake === 22 && loss.wait === 10, JSON.stringify(loss));
+  const ch = { n: 5, stake: 40, base: 20, cap: 80, wait: 10, lastSym: "R_10" };
+  C.streakTickWait(ch, 4);
+  eq("streak tick wait: −4 → 6", ch.wait, 6);
+  C.streakTickWait(ch, 99);
+  eq("streak tick wait: extra ticks clamp at 0", ch.wait, 0);
+  C.streakTickWait(ch, 5);
+  eq("streak tick wait: already 0 stays 0", ch.wait, 0);
+  const noCh = C.streakTickWait(null, 3);
+  eq("streak tick wait: null chain tolerated", noCh, null);
+}
+
 console.log(fails === 0 ? `\nICT ENGINE TEST PASSED ✓ (${passes} checks)` : `\n${fails} FAILURES ✗ (${passes} passed)`);
 process.exit(fails === 0 ? 0 : 1);

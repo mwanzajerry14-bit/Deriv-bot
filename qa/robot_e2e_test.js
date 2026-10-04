@@ -165,10 +165,12 @@ function makeMockWS() {
           this._digNet = dNet;
           return withRid({ msg_type: "proposal", proposal: { id: "32d2ec97-f568-6f7f-38c8-b1fda4275f32", ask_price: dPrice, payout: r2(dPrice * (1 + dNet)) } });
         }
-        // redesign contract: minute expiries, USD, price = stake, net payout 0.886
-        const ok = m.underlying_symbol === "R_10" && m.duration_unit === "m" &&
-                   [1, 2, 3, 5, 10].indexOf(Number(m.duration)) >= 0 && m.currency === "USD" &&
-                   Number(m.amount) > 0;
+        // redesign contract: minute expiries (ICT/Rise-Fall) OR 5-tick CALL/PUT (streak), USD, price = stake
+        const tickT = m.duration_unit === "t" && ["CALL", "PUT"].indexOf(m.contract_type) >= 0;
+        const minuteOk = m.duration_unit === "m" && [1, 2, 3, 5, 10].indexOf(Number(m.duration)) >= 0;
+        const ok = m.underlying_symbol === "R_10" &&
+                   (tickT ? Number(m.duration) === 5 : minuteOk) &&
+                   m.currency === "USD" && Number(m.amount) > 0;
         if (!ok) return withRid({ msg_type: "proposal", error: { code: "InputValidationFailed", message: "unexpected proposal fields: " + JSON.stringify(m) } });
         const price = Number(m.amount);
         // gatePayouts mode (scenario 4): the 1m quote pays terribly (0.78 net) — forces the EV probe
@@ -178,9 +180,10 @@ function makeMockWS() {
       }
       if (m.buy != null) {
         const price = Number(m.price);
-        const ok = typeof m.buy === "string" && m.buy.length >= 32 && price > 0 && Math.abs(price - 7.5) < 0.001;
+        const ok = typeof m.buy === "string" && m.buy.length >= 32 && price >= 0.35;
         if (!ok) return withRid({ msg_type: "buy", error: { code: "InputValidationFailed", message: "bad buy: " + JSON.stringify(m) } });
         const netNow = this._digNet != null ? this._digNet : NET;
+        this._lastPrice = price;
         this._bal = r2(this._bal - price);
         setTimeout(() => {
           if (this.onmessage) this.onmessage({ data: JSON.stringify({ msg_type: "balance", balance: { balance: this._bal, currency: "USD" } }) });
@@ -192,10 +195,11 @@ function makeMockWS() {
         const netP = this._digNet != null ? this._digNet : NET;
         withRid({ msg_type: "proposal_open_contract", proposal_open_contract: { contract_id: 987654, is_sold: 0, status: "open" } });
         setTimeout(() => {
-          const payout = r2(7.5 * (1 + netP));
+          const pStake = this._lastPrice != null ? this._lastPrice : 7.5;
+          const payout = r2(pStake * (1 + netP));
           this._bal = r2(this._bal + payout);
           if (this.onmessage) this.onmessage({ data: JSON.stringify({ msg_type: "balance", balance: { balance: this._bal, currency: "USD" } }) });
-          if (this.onmessage) this.onmessage({ data: JSON.stringify({ msg_type: "proposal_open_contract", proposal_open_contract: { contract_id: 987654, is_sold: 1, status: "won", profit: r2(7.5 * netP) }, req_id: ridSave }) });
+          if (this.onmessage) this.onmessage({ data: JSON.stringify({ msg_type: "proposal_open_contract", proposal_open_contract: { contract_id: 987654, is_sold: 1, status: "won", profit: r2(pStake * netP) }, req_id: ridSave }) });
         }, 20);
         return;
       }
@@ -488,6 +492,56 @@ async function tradeFlow(els, tag) {
     JSON.stringify({ mode: s5.els.modePill.textContent, tail: l5r.slice(-300) }));
   s5.els.btnStop._handlers.click();
   check("s5: STOP works", s5.els.modePill.textContent === "STOPPED", s5.els.modePill.textContent);
+
+  // ---------- scenario 6: Streak Scaling strategy (5-tick trend + inverted stake chain) ----------
+  console.log("\n--- scenario 6: streak mode (5t CALL/PUT, ×2/win chain, 10-tick wait)");
+  const s6 = buildSandbox();
+  MockWS.rfMode = true;    // fresh forming candle + bullish closed tail → live isLive + c2/c1 bullish
+  MockWS.tickMode = "rf";  // rising tick stream: tick > c2.close + t1 > t10 for the CALL branch
+  s6.els.selStrategy = mkEl();
+  s6.els.selStrategy.value = "streak";
+  s6.els.inpToken.value = TOKEN;
+  await s6.els.btnScan._handlers.click();
+  await sleep(500);
+  check("s6: streak scan fetches candles AND ticks",
+    ((MockWS.counts || {}).R_10 || 0) >= 1 && ((MockWS.counts || {})["ticks:R_10"] || 0) >= 1,
+    JSON.stringify(MockWS.counts));
+  await s6.els.btnArm._handlers.click();
+  await sleep(1200);
+  const l6 = s6.els.log.innerHTML;
+  check("s6: ARMED chain copy (base 2% $20 → cap 8% $80, ×2/win, reset on loss, 10-tick wait)",
+    /Streak chain armed — base \$20\.00 \(2%\) → cap \$80\.00 \(8%\) · ×2 per win · reset on loss · 10-tick wait\./.test(l6) &&
+    /streak scaling — 5-tick CALL\/PUT on 4\/4 candle checks, chain stake \(×2\/win, 8% cap, reset on loss\), real-payout EV gate\./.test(l6),
+    l6.slice(-500));
+  check("s6: CALL setup at chain ×0 with base stake $20 (5t)",
+    /SETUP: Volatility 10 Index \(R_10\) CALL · streak ×0 · EV≈[0-9.]+ → stake \$20\.00 \(5t\)/.test(l6),
+    l6.slice(-700));
+  check("s6: R_50 (flat candles) never set up", !/SETUP:.*R_50/.test(l6), l6.slice(-700));
+  check("s6: no minute EV-probe — fixed 5t candidate only (one proposal, unit t)",
+    MockWS.proposals.length === 1 && MockWS.proposals[0].u === "t" && Number(MockWS.proposals[0].d) === 5,
+    JSON.stringify(MockWS.proposals));
+  const prop6 = MockWS.lastProposal;
+  check("s6: proposal = CALL, 5 ticks, USD, amount $20.00, no barrier",
+    prop6 && prop6.contract_type === "CALL" && prop6.duration_unit === "t" &&
+    Number(prop6.duration) === 5 && Number(prop6.amount) === 20 && prop6.currency === "USD" &&
+    prop6.barrier == null, JSON.stringify(prop6));
+  check("s6: OPEN at the chain stake", /OPEN #987654 · CALL R_10 \$20\.00/.test(l6), l6.slice(-500));
+  check("s6: settlement WON +$17.72 (0.886 net × $20)",
+    /WON #987654 · \+\$17\.72 · day P\/L \+\$17\.72 · consec 0/.test(l6), l6.slice(-500));
+  check("s6: chain advances ×1 → next $40 (×2 per win) with base/cap recomputed + wait 10t",
+    /Streak closed — ×1 · next \$40\.00 \(base \$20\.35 · cap \$81\.42\) · wait 10t/.test(l6),
+    l6.slice(-700));
+  check("s6: 10-tick wait blocks a second entry (exactly one OPEN)",
+    (l6.match(/OPEN #987654/g) || []).length === 1, l6.slice(-700));
+  check("s6: stats show the chain stake ($40.00), not the flat 0.75%",
+    s6.els.stStake.textContent === "$40.00", s6.els.stStake.textContent);
+  check("s6: trade logged st=streak with 5t expiry",
+    /"st":"streak"/.test(s6.store.dr_robot_log || "") && /"expiry":"5t"/.test(s6.store.dr_robot_log || ""),
+    (s6.store.dr_robot_log || "").slice(0, 300));
+  check("s6: still ARMED after win (profit lock not hit, wait ≠ stop)",
+    s6.els.modePill.textContent === "ARMED", s6.els.modePill.textContent);
+  s6.els.btnStop._handlers.click();
+  check("s6: STOP works", s6.els.modePill.textContent === "STOPPED", s6.els.modePill.textContent);
 
   console.log(failures === 0 ? "\nROBOT E2E TEST PASSED ✓" : `\n${failures} FAILURES ✗`);
   process.exit(failures === 0 ? 0 : 1);
